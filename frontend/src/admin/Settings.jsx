@@ -63,19 +63,24 @@ export default function Settings() {
     }
 
     setSaving(true)
-    await new Promise((r) => setTimeout(r, 600)) // mock request
-    const current = loadHospital()
-    saveHospital({
-      ...current,
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      erNumber: form.erNumber.trim(),
-      email: form.email.trim(),
-      street: form.street.trim(),
-      cityState: form.cityState.trim(),
-      visiting: { ...current.visiting, start: form.opens || null, end: form.closes || null, maxVisitors: visitors },
-    })
-    setAccount({ name: form.adminName.trim(), email: form.adminEmail.trim() })
+    try {
+      const current = loadHospital()
+      await saveHospital({
+        ...current,
+        name: form.name.trim(),
+        phone: form.phone.trim(),
+        erNumber: form.erNumber.trim(),
+        email: form.email.trim(),
+        street: form.street.trim(),
+        cityState: form.cityState.trim(),
+        visiting: { ...current.visiting, start: form.opens || null, end: form.closes || null, maxVisitors: visitors },
+      })
+      await setAccount({ name: form.adminName.trim(), email: form.adminEmail.trim() })
+    } catch (err) {
+      setSaving(false)
+      toast(err.message, { tone: 'error' })
+      return
+    }
     const clean = { ...form, maxVisitors: visitors }
     setForm(clean)
     setSaved(clean)

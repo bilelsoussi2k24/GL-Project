@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import Modal from '../components/Modal.jsx'
 import { Alert, Button, Field, cx } from '../components/ui.jsx'
-import { useDoctorData } from './DoctorData.jsx'
+import { useDoctorData, findPatient } from './DoctorData.jsx'
 import { fromISODate, todayISO, toMinutes } from '../utils/date.js'
 
 const empty = { name: '', hhId: '', phone: '', reason: '', date: '', time: '' }
@@ -14,7 +14,7 @@ function toForm(appt) {
 // Create (no `appointment`) or edit an appointment.
 // Render it with a `key` so the form resets each time it opens.
 export default function AppointmentModal({ open, onClose, appointment, onSaved }) {
-  const { appointments, profile, addAppointment, updateAppointment } = useDoctorData()
+  const { appointments, patients, profile, addAppointment, updateAppointment } = useDoctorData()
   const [form, setForm] = useState(() => toForm(appointment))
   const [errors, setErrors] = useState({})
   const isEdit = !!appointment
@@ -50,6 +50,13 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
         (a) => a.id !== appointment?.id && a.status !== 'cancelled' && a.date === form.date && a.time === form.time,
       )
       if (clash) errs.conflict = `You already have ${clash.patient.name} at ${clash.time} that day.`
+    }
+    // The backend books only patients assigned to this doctor, and can't edit a booking yet.
+    if (!errs.name && !errs.hhId && !isEdit && !findPatient(patients, { name: form.name, hhId: form.hhId })) {
+      errs.name = 'Not one of your patients. Use their full name or HH number.'
+    }
+    if (isEdit && !errs.conflict) {
+      errs.conflict = 'The server can’t change a booking yet. Cancel it and book a new one instead.'
     }
     setErrors(errs)
     if (Object.keys(errs).length) return

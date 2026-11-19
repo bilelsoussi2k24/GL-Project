@@ -1,14 +1,14 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 
-// Admin data, held in memory for this session (no backend yet).
-// Everything starts empty: the admin adds doctors and fills in their own account.
-// When a backend exists, load these from the API and call it inside the actions below.
+// Admin data, held in memory for this session.
+// The Java backend has no admin endpoints yet; when it does, load these through
+// services/api.js and call it inside the actions below.
 
 const AdminContext = createContext(null)
 
 export function AdminDataProvider({ children }) {
   const [doctors, setDoctors] = useState([])
-  const [account, setAccount] = useState({ name: '', email: '' })
+  const [account, setAccountState] = useState({ name: '', email: '' })
 
   const addDoctor = useCallback((data) => {
     setDoctors((list) => {
@@ -40,9 +40,15 @@ export function AdminDataProvider({ children }) {
       })
   }, [])
 
+  // Async so Settings can await it once there is a real endpoint.
+  const setAccount = useCallback(async (next) => {
+    setAccountState(next)
+    return next
+  }, [])
+
   const value = useMemo(
     () => ({ doctors, account, setAccount, addDoctor, updateDoctor, removeDoctor }),
-    [doctors, account, addDoctor, updateDoctor, removeDoctor],
+    [doctors, account, setAccount, addDoctor, updateDoctor, removeDoctor],
   )
 
   return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>

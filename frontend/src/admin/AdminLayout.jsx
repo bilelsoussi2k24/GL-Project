@@ -31,10 +31,10 @@ function Shell() {
 
 export default function AdminLayout() {
   return (
-    <AdminDataProvider>
-      <ToastProvider>
+    <ToastProvider>
+      <AdminDataProvider>
         <Shell />
-      </ToastProvider>
-    </AdminDataProvider>
+      </AdminDataProvider>
+    </ToastProvider>
   )
 }

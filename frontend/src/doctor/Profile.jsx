@@ -26,7 +26,7 @@ function timeAgo(ts) {
 }
 
 export default function Profile() {
-  const { profile, setProfile } = useDoctorData()
+  const { profile, setProfile, patchProfile } = useDoctorData()
   const toast = useToast()
   const { hash } = useLocation()
   const hoursRef = useRef(null)
@@ -88,8 +88,13 @@ export default function Profile() {
       return
     }
     setSaving(true)
-    await new Promise((r) => setTimeout(r, 600)) // mock request
-    setProfile(form)
+    try {
+      await setProfile(form)
+    } catch (err) {
+      setSaving(false)
+      toast(err.message, { tone: 'error' })
+      return
+    }
     setSaving(false)
     setSavedFlash(true)
     setTimeout(() => setSavedFlash(false), 1800)
@@ -189,9 +194,9 @@ export default function Profile() {
               className="overflow-hidden"
             >
               <ChangePassword
-                onDone={() => {
-                  const ts = Date.now()
-                  setProfile((p) => ({ ...p, passwordChangedAt: ts }))
+                onDone={(result) => {
+                  const ts = result?.passwordChangedAt ?? Date.now()
+                  patchProfile({ passwordChangedAt: ts })
                   setForm((f) => ({ ...f, passwordChangedAt: ts }))
                   setPwOpen(false)
                   toast('Password updated')

@@ -55,10 +55,10 @@ function Shell() {
 
 export default function DoctorLayout() {
   return (
-    <DoctorDataProvider>
-      <ToastProvider>
+    <ToastProvider>
+      <DoctorDataProvider>
         <Shell />
-      </ToastProvider>
-    </DoctorDataProvider>
+      </DoctorDataProvider>
+    </ToastProvider>
   )
 }

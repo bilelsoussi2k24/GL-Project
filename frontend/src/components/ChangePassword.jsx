@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { motion } from 'motion/react'
 import { EyeIcon, EyeOffIcon } from './Icons.jsx'
 import { Button, Field, PillButton, Spinner, cx } from './ui.jsx'
+import { changePassword } from '../services/auth.js'
 
 function strength(pw) {
   let s = 0
@@ -20,7 +21,7 @@ const meter = [
   { label: 'Strong', width: '100%', color: 'bg-[#2f8a57]' },
 ]
 
-// Inline change-password form with a strength meter. Calls onDone() after the (mock) request.
+// Inline change-password form with a strength meter. Calls onDone(result) once the server accepts the new password.
 export default function ChangePassword({ onDone }) {
   const [pw, setPw] = useState({ current: '', next: '', confirm: '' })
   const [show, setShow] = useState(false)
@@ -43,8 +44,15 @@ export default function ChangePassword({ onDone }) {
     setErrors(errs)
     if (Object.keys(errs).length) return
     setBusy(true)
-    await new Promise((r) => setTimeout(r, 700)) // mock request
-    onDone()
+    try {
+      const result = await changePassword(pw.current, pw.next)
+      onDone(result)
+    } catch (err) {
+      setBusy(false)
+      // Wrong current password is the usual reason; show other messages under the new password.
+      if (/current/i.test(err.message)) setErrors({ current: err.message })
+      else setErrors({ next: err.message })
+    }
   }
 
   const type = show ? 'text' : 'password'
