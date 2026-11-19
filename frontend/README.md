@@ -4,13 +4,24 @@ React + Vite app for the hospital: a public "Visit us" homepage, a staff login, 
 
 ## Run it
 
+Development (hot reload, http://localhost:5173):
+
 ```bash
 cd frontend
 npm install
-npm run dev      # http://localhost:5173
+npm run dev
 ```
 
-Other scripts: `npm run build` (production build into `dist/`), `npm run preview` (serve the build), `npm run lint`.
+Production with the Node.js server (http://localhost:3000):
+
+```bash
+npm run build    # builds the React app into dist/
+npm start        # node server.js
+```
+
+`server.js` is a small Node.js server with no extra packages. It serves `dist/`, sends `index.html` for app pages such as `/doctor` so links and refreshes work, and forwards `/api/*` to the Java backend. Set `PORT` to change its port and `API_URL` to point at another backend (default `http://localhost:8080`).
+
+Other scripts: `npm run preview` (Vite's own preview of the build), `npm run lint`.
 
 ## Pages
 
