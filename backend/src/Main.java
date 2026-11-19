@@ -10,7 +10,7 @@ public class Main {
 
         try {
             Consultation consultation = new Consultation(
-                2,                       // Consultation ID (replace with actual ID)
+                3,                       // Consultation ID (replace with actual ID)
                 2,                       // Appointment ID
                 "Allergic rhinitis",      // Updated diagnosis
                 "Antihistamine for 5 days",
