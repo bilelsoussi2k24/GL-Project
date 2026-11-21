@@ -35,13 +35,39 @@ public final class DatabaseMigrator {
         ensureDatabase(log);
 
         try (Connection con = DatabaseConnection.getConnection()) {
-            createTables(con);
-            addMissingColumns(con, log);
-            widenStatusEnums(con);
-            backfillStaffIds(con);
-            addIndexes(con);
-            seedSettings(con);
-            ensureAdministrator(log);
+            acquireLock(con);
+            try {
+                createTables(con);
+                addMissingColumns(con, log);
+                widenStatusEnums(con);
+                backfillStaffIds(con);
+                addIndexes(con);
+                seedSettings(con);
+                ensureAdministrator(con, log);
+            } finally {
+                releaseLock(con);
+            }
+        }
+    }
+
+    /**
+     * Serialises migration and bootstrap between application instances. Without this,
+     * two servers starting together could both run the administrator bootstrap.
+     */
+    private static void acquireLock(Connection con) throws SQLException {
+        try (PreparedStatement st = con.prepareStatement("SELECT GET_LOCK('haven_schema_migration', 30)");
+             ResultSet rs = st.executeQuery()) {
+            if (!rs.next() || rs.getInt(1) != 1) {
+                throw new SQLException("Could not acquire the migration lock; another instance is migrating.");
+            }
+        }
+    }
+
+    private static void releaseLock(Connection con) {
+        try (PreparedStatement st = con.prepareStatement("SELECT RELEASE_LOCK('haven_schema_migration')")) {
+            st.executeQuery();
+        } catch (SQLException e) {
+            System.err.println("Could not release the migration lock: " + e.getMessage());
         }
     }
 
@@ -304,39 +330,75 @@ public final class DatabaseMigrator {
     /**
      * Makes sure an administrator can sign in.
      *
-     * The original SQL dump contains placeholder password hashes, so an existing
-     * database may have an admin row that nobody can log into. When no administrator
-     * has a real password hash, the configured admin account is created (or its
-     * placeholder is replaced). No other account is touched.
+     * <p>Rules, in order:</p>
+     * <ul>
+     *   <li>If an active administrator with a real password hash exists, nothing is
+     *       changed (repeated starts never reset a working password).</li>
+     *   <li>An existing account at ADMIN_EMAIL that is not an administrator is never
+     *       modified: its role and password stay as they are, and startup reports the
+     *       conflict so the operator can choose another address.</li>
+     *   <li>An administrator with a legacy placeholder hash gets a real password; an
+     *       inactive administrator with a usable hash is reactivated, not reset.</li>
+     *   <li>If no active usable administrator exists and ADMIN_EMAIL is free, the
+     *       bootstrap account is created.</li>
+     * </ul>
      */
-    private static void ensureAdministrator(PrintStream log) throws SQLException {
+    private static void ensureAdministrator(Connection con, PrintStream log) throws SQLException {
         UserDAO users = new UserDAO();
         users.renameDefaultAdminTitle();
         String email = AppConfig.initialAdminEmail();
 
-        if (users.countUsableAdmins() > 0) return;
+        if (users.countActiveUsableAdmins(con) > 0) return;
 
-        String password = AppConfig.initialAdminPassword();
-        boolean generated = password == null || password.isBlank();
-        if (generated) password = randomPassword();
-
-        model.User existing = users.findByEmail(email);
-        if (existing != null) {
-            users.updatePassword(existing.getId(), PasswordHasher.hash(password));
-            users.setActive(existing.getId(), true);
-            log.println("Reset the placeholder password of " + email + " (it could not be used to sign in).");
-        } else {
-            users.create(email, PasswordHasher.hash(password), "ADMIN", "Administrator", null);
-            log.println("Created the first administrator account.");
+        model.User existing = users.findByEmail(con, email);
+        if (existing != null && !"ADMIN".equals(existing.getRole())) {
+            throw new SQLException("ADMIN_EMAIL " + email + " belongs to an existing "
+                + existing.getRole() + " account. No account was changed. Set ADMIN_EMAIL to a"
+                + " free address (or reset that account with tool.SetPassword) and start again.");
         }
+
+        boolean needsPassword = existing == null || PasswordHasher.isLegacy(existing.getPasswordHash());
+        String password = null;
+        if (needsPassword) {
+            String configured = AppConfig.initialAdminPassword();
+            boolean generated = configured == null || configured.isBlank();
+            if (!generated && !PasswordHasher.isStrongEnough(configured)) {
+                throw new SQLException("ADMIN_PASSWORD must be at least 8 characters and contain"
+                    + " a letter and a number.");
+            }
+            password = generated ? randomPassword() : configured;
+        }
+
+        con.setAutoCommit(false);
+        try {
+            if (existing == null) {
+                users.create(con, email, PasswordHasher.hash(password), "ADMIN", "Administrator");
+                log.println("Created the first administrator account.");
+            } else if (needsPassword) {
+                users.updatePassword(con, existing.getId(), PasswordHasher.hash(password));
+                users.setActive(con, existing.getId(), true);
+                log.println("Replaced the unusable placeholder password of " + email + ".");
+            } else {
+                users.setActive(con, existing.getId(), true);
+                log.println("Reactivated the existing administrator " + email + " (password unchanged).");
+            }
+            con.commit();
+        } catch (SQLException | RuntimeException e) {
+            con.rollback();
+            throw e;
+        } finally {
+            con.setAutoCommit(true);
+        }
+
+        if (password == null) return;
 
         log.println("--------------------------------------------------------------");
         log.println("Administrator sign-in:");
         log.println("  email:    " + email);
-        if (generated) {
+        if (AppConfig.initialAdminPassword() == null || AppConfig.initialAdminPassword().isBlank()) {
             log.println("  password: " + password);
-            log.println("Set ADMIN_PASSWORD in backend/.env before the first start");
-            log.println("to choose this password yourself. Change it after signing in.");
+            log.println("This password is printed once. Set ADMIN_PASSWORD in backend/.env before");
+            log.println("the first start to choose it yourself. Change it after signing in.");
         } else {
             log.println("  password: (the ADMIN_PASSWORD value from your configuration)");
         }
