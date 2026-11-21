@@ -117,7 +117,6 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
       <form id="appt-form" onSubmit={submit} noValidate className="grid gap-4 sm:grid-cols-2">
         {field('name', 'Patient name', { wide: true, input: { 'data-autofocus': true, placeholder: 'First and last name', autoComplete: 'off' } })}
         {field('hhId', 'Patient ID', { input: { placeholder: 'HH-000000' } })}
-        {field('phone', 'Phone', { input: { placeholder: 'Phone number', inputMode: 'tel' } })}
         {field('reason', 'Reason for visit', { wide: true, input: { placeholder: 'e.g. Follow-up visit' } })}
         {field('date', 'Date', { input: { type: 'date' } })}
         {field('time', 'Time', { input: { type: 'time', step: 300 } })}
