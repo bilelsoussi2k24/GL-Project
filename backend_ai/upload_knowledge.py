@@ -11,7 +11,9 @@ from hospital_data import hospital_documents
 # 1. Load environment variables
 load_dotenv()
 
-api_key = os.environ["PINECONE_API_KEY"]
+api_key = os.getenv("PINECONE_API_KEY")
+if not api_key:
+    raise SystemExit("Set PINECONE_API_KEY in backend_ai/.env before running this script.")
 index_name = os.getenv(
     "PINECONE_INDEX_NAME",
     "hospital-embeddings"

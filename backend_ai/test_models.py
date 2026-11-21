@@ -9,11 +9,13 @@ client = genai.Client(
     http_options={"timeout": 15000}
 )
 
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
 print("Calling Gemini...", flush=True)
 
 try:
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model=MODEL,
         contents="Say hello in one sentence."
     )
     print("SUCCESS:", response.text)

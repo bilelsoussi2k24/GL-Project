@@ -1,0 +1,5 @@
+# Optional: only needed for the experimental knowledge-base scripts
+# (upload_knowledge.py, test_pinecone.py). The chat API does not use them.
+pinecone>=6.0,<7.0
+sentence-transformers>=3.0,<6.0
+requests>=2.32,<3.0

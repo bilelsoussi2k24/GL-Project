@@ -1,15 +1,20 @@
 
 import os
+
 from dotenv import load_dotenv
 from pinecone import Pinecone
 
 load_dotenv()
 
-# Connect to Pinecone
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+api_key = os.getenv("PINECONE_API_KEY")
+if not api_key:
+    raise SystemExit("Set PINECONE_API_KEY in backend_ai/.env before running this script.")
 
-# Access our index
-index_name = "hospital-knowledge"
+# Connect to Pinecone
+pc = Pinecone(api_key=api_key)
+
+# Same index as upload_knowledge.py
+index_name = os.getenv("PINECONE_INDEX_NAME", "hospital-embeddings")
 
 print("Connecting to Pinecone...", flush=True)
 
