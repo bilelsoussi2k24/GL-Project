@@ -35,6 +35,7 @@ copy .env.example .env
 | `DB_PASSWORD` | *(empty)* | MySQL password |
 | `BIND_ADDRESS` | `127.0.0.1` | Listening interface |
 | `PORT` | `8080` | HTTP port (`0` or invalid falls back to 8080) |
+| `TRUST_PROXY` | `false` | Honour `X-Forwarded-For`; enable only behind a proxy you control |
 | `CORS_ORIGINS` | localhost/127.0.0.1 on 5173 and 3000 | Comma-separated allowlist |
 | `SESSION_HOURS` | `12` | Session lifetime |
 | `ADMIN_EMAIL` | `admin@haven.local` | Bootstrap administrator email |
@@ -89,8 +90,11 @@ Verify:
 
 ```bash
 curl http://localhost:8080/api/health
-# {"status":"ok","database":"ok (MySQL 8.0.46)","time":"..."}
+# {"status":"ok","database":"ok","time":"..."}
 ```
+
+The health payload is deliberately generic: database errors, host names, versions and connection
+strings are written to the server log, never returned to the caller.
 
 The process migrates the schema, creates the first administrator if none can sign in, then serves
 `/api/*`. `Ctrl+C` stops it.
@@ -116,6 +120,7 @@ src/
 ├── security/
 │   ├── PasswordHasher     PBKDF2-HMAC-SHA256, SHA-256 token hashing, strength rule
 │   ├── AuthService        login, throttling, sessions, password change
+│   ├── RateLimiter        bounded, thread-safe sliding-window counters
 │   └── Session            authenticated caller
 └── tool/
     ├── DbSetup            run migration and report unusable accounts
@@ -152,9 +157,12 @@ profile. Wrong role → 403; another doctor's record → 404.
 - PBKDF2-HMAC-SHA256, 210 000 iterations, random 16-byte salt, stored as
   `pbkdf2_sha256$iterations$salt$hash`.
 - Login returns a random token; `auth_sessions` stores only its SHA-256 hash and expiry.
-- Logout deletes the row; password changes revoke all other sessions; deactivation revokes all
-  sessions immediately.
-- Failed logins: 8 per email + client per 10 minutes → 429.
+- Logout deletes the row; password changes revoke all other sessions; deactivation (including a
+  doctor status change or an account deactivation) revokes every session in the same transaction.
+  Reactivating an account never makes an old token valid again.
+- Passwords are read exactly as sent: surrounding whitespace is part of the password, never trimmed.
+- Failed logins: 8 per email + client address per 10 minutes, plus a broader 50 per address per
+  10 minutes → 429. `X-Forwarded-For` is ignored unless `TRUST_PROXY=true`.
 - All responses use `Cache-Control: no-store`; CORS is an explicit allowlist.
 - The Gemini key never reaches this process: the AI call is forwarded to `AI_SERVICE_URL`.
 
@@ -167,8 +175,9 @@ java -cp "out;lib/*" tool.SetPassword ahmed@hospital.com "NewPassword123"
 ```
 
 - `DbSetup` applies the migration and lists accounts that still have legacy placeholder hashes.
-- `SetPassword` writes a PBKDF2 hash, activates the account and revokes its sessions. Passwords must
-  satisfy the same strength rule as the API.
+- `SetPassword` writes a PBKDF2 hash and revokes the account's sessions in one transaction. It does
+  not change the account's role or activation state. Passwords must satisfy the same strength rule as
+  the API and are passed exactly as typed (quote them if they contain spaces).
 
 On Linux/macOS use `out:lib/*`.
 
@@ -182,14 +191,18 @@ python tests\api_test.py
 
 Environment: `API_BASE`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`. Uniquely named records make it rerunnable.
 
-Unit checks for hashing:
+Java unit and bootstrap checks:
 
 ```bat
-javac -encoding UTF-8 -d .tmp\test-classes -cp "backend\out" tests\java\PasswordHasherTest.java
-java -cp ".tmp\test-classes;backend\out" PasswordHasherTest
+javac -encoding UTF-8 -d .tmp\test-classes -cp "backend\out;backend\lib/*" tests\java\PasswordHasherTest.java tests\java\PasswordInputTest.java tests\java\AdministratorBootstrapTest.java
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" PasswordHasherTest
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" PasswordInputTest
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" AdministratorBootstrapTest
 ```
 
-From `backend/`, adjust the relative paths (`../tests/...`, `../.tmp/...`).
+`AdministratorBootstrapTest` needs a disposable MySQL server (`TEST_MYSQL_HOST_PORT`, default
+`127.0.0.1:3307`, and `DB_USER`/`DB_PASSWORD`). It creates and drops `haven_test_boot_*` databases and
+refuses to run when `DB_URL` points anywhere else.
 
 ## Troubleshooting
 
@@ -201,11 +214,12 @@ From `backend/`, adjust the relative paths (`../tests/...`, `../.tmp/...`).
 | `Public Key Retrieval is not allowed` | Keep the default `DB_URL` (it appends `allowPublicKeyRetrieval=true`). |
 | `Address already in use` | Port taken: change `PORT` and the frontend proxy target, or stop the other process. |
 | `ClassNotFoundException: Main` | Wrong separator (`;` on Windows, `:`) or Git Bash path conversion (`MSYS_NO_PATHCONV=1`). |
-| 503 on data routes | The database is unreachable; `/api/health` shows the reason. |
+| 503 on data routes | The database is unreachable; `/api/health` reports `database: unavailable` and the server log has the reason. |
 | Everyone gets 401 | Sessions expired (`SESSION_HOURS`) or the database was restored from an older backup without `auth_sessions`. |
 | Doctor cannot sign in after a legacy import | Placeholder hash: reset the password (`tool.SetPassword` or Accounts). |
 | Assistant 503/502/504 | Python service offline / Gemini error / timeout; check its console. |
-| Startup says "Created the first administrator" repeatedly | The configured admin still has an unusable hash; check `ADMIN_EMAIL` matches the account you expect. |
+| Startup reports that `ADMIN_EMAIL` belongs to a DOCTOR account | Choose a free address for `ADMIN_EMAIL`; the bootstrap never changes an existing account's role or password. |
+| 429 after many wrong passwords | The per-address or per-email+address login window is full; wait 10 minutes. |
 
 ## Code conventions
 

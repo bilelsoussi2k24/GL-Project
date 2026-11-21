@@ -75,8 +75,11 @@ On the next start the migration:
   `consultations` and `users`,
 - widens the status enums,
 - assigns staff IDs (`DR-0001`, …),
-- backfills the link between legacy appointments and `doctor_patients`,
 - creates an administrator because the dump only has placeholder hashes.
+
+Verified against an empty database, the full original dump, an already-migrated database and a
+database with doctors, patients, appointments and consultations: row counts were identical before and
+after, all 15 expected columns and indexes were present, and a second migration changed nothing.
 
 Existing rows are kept. Accounts with placeholder hashes (`test_hash_*`) cannot sign in; see
 [Legacy accounts](#legacy-accounts).
@@ -149,11 +152,18 @@ on every start when `AUTO_MIGRATE=true` and is **additive and idempotent**:
 - backfills `doctors.staff_id` (`DR-0001`, `DR-0002`, …);
 - adds missing indexes;
 - `INSERT IGNORE`s default settings;
-- creates/unlocks the configured administrator only when no usable administrator exists, and renames
-  the default "Hospital Administrator" title to "Administrator".
+- ensures an **active** administrator with a usable hash exists; an inactive administrator is
+  reactivated without a password reset, a legacy placeholder hash is replaced, and a working
+  administrator's password is never touched on later starts;
+- renames the default "Hospital Administrator" title to "Administrator".
 
-It never drops tables, columns or rows and never overwrites an existing profile or password. See
-[`migrations/README.md`](migrations/README.md).
+It never drops tables, columns or rows and never overwrites an existing profile or password. If
+`ADMIN_EMAIL` already belongs to a DOCTOR account, the migration stops with an explicit message and
+changes nothing: choose a free address for `ADMIN_EMAIL`.
+
+The whole migration runs under a MySQL advisory lock (`GET_LOCK('haven_schema_migration')`), so two
+instances starting at the same time cannot both run the schema upgrade or create two bootstrap
+administrators. See [`migrations/README.md`](migrations/README.md).
 
 You can run the migration without starting the HTTP server:
 
@@ -211,8 +221,10 @@ Recovery options:
 3. **List affected accounts:** `java -cp "out;lib/*" tool.DbSetup`.
 
 The bootstrap administrator (`ADMIN_EMAIL`, default `admin@haven.local`) is created automatically when
-no administrator has a usable hash, so a fresh install always has a way in. Set `ADMIN_PASSWORD` in
-`backend/.env` before the first start to choose it; otherwise a random one is printed once.
+no **active** administrator has a usable hash, so a fresh install always has a way in. Set
+`ADMIN_PASSWORD` in `backend/.env` before the first start to choose it; otherwise a random one is
+printed once. If `ADMIN_EMAIL` is already used by a doctor, bootstrap refuses to modify that account
+and reports the conflict instead of silently changing its role or password.
 
 ## Common database errors
 

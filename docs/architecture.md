@@ -103,7 +103,7 @@ sequenceDiagram
 
     U->>F: email + password (+ role)
     F->>A: POST /api/auth/login
-    A->>A: throttle check (email + client)
+    A->>A: throttle check (email + client address, and per address)
     A->>D: SELECT user by email
     A->>A: PBKDF2 verify, active check, role check
     A->>D: INSERT auth_sessions (sha256(token), expiry)
@@ -227,7 +227,8 @@ that already contain data:
 5. Backfill `staff_id` for doctors that do not have one (`DR-0001`, `DR-0002`, …).
 6. Add missing indexes.
 7. `INSERT IGNORE` the default hospital settings.
-8. Create the configured administrator only when no administrator has a usable PBKDF2 hash; rename the
+8. Create the configured administrator only when no **active** administrator has a usable PBKDF2 hash;
+   never reset a working administrator, never change a doctor's role or password; rename the
    legacy default title "Hospital Administrator" to "Administrator".
 
 It never drops a table, a column or a row, and it never overwrites an existing profile or password.

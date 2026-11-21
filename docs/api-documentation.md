@@ -45,7 +45,7 @@ All errors have the shape:
 | 404 | Resource missing **or not owned by the calling doctor** |
 | 405 | Path exists with a different method |
 | 409 | Duplicate email, duplicate consultation, conflicting record |
-| 429 | Too many failed logins (8 per 10 min) or too many assistant questions (15 per minute) |
+| 429 | Too many failed logins (8 per email+address or 50 per address in 10 min) or too many assistant questions (15 per minute) |
 | 500 | Unexpected server error |
 | 503 | Database unavailable or AI service offline/not configured |
 | 502 | AI service returned an error or an empty answer |
@@ -127,10 +127,11 @@ curl http://localhost:8080/api/health
 ```
 
 ```json
-{ "status": "ok", "database": "ok (MySQL 8.0.46)", "time": "2026-11-21T10:15:00.123" }
+{ "status": "ok", "database": "ok", "time": "2026-11-21T10:15:00.123" }
 ```
 
-`database` is `unavailable: <reason>` when the connection fails.
+`database` is `ok` or `unavailable`. It deliberately carries no SQL message, version, host or
+connection string; the detailed error is written to the backend log.
 
 ### `GET /public/hospital`
 
@@ -455,9 +456,11 @@ curl -s http://localhost:8080/api/admin/stats -H "Authorization: Bearer $TOKEN"
 
 | Limit | Value |
 | --- | --- |
-| Failed logins | 8 per email + client address per 10 minutes → `429` |
+| Failed logins | 8 per email + client address per 10 minutes, plus 50 per address per 10 minutes → `429` |
 | Assistant questions | 15 per client address per minute → `429` |
 | Session lifetime | `SESSION_HOURS`, default 12 hours |
 | Request body | 64 KiB |
 
-Both limits are held in memory, so they reset when the API restarts and apply per instance.
+Both limits are held in memory, so they reset when the API restarts and apply per instance. The
+client address is the TCP peer unless `TRUST_PROXY=true` is set behind a reverse proxy; without that
+setting, `X-Forwarded-For` is ignored.

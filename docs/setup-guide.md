@@ -116,10 +116,16 @@ Rules that matter:
   `allowPublicKeyRetrieval=true`, `serverTimezone=UTC` and `characterEncoding=utf8`.
 - `ADMIN_PASSWORD` is used **only** when no usable administrator exists. If it is empty, a random
   password is generated and printed once. It is never stored in plain text.
-- Passwords must be at least 8 characters and contain a letter and a digit.
+- A working administrator's password is never reset on later starts. An inactive administrator is
+  reactivated without changing the password. If `ADMIN_EMAIL` belongs to a DOCTOR account, startup
+  reports the conflict and changes nothing: choose another address.
+- Passwords must be at least 8 characters and contain a letter and a digit. They are read exactly as
+  typed; leading and trailing spaces are significant.
 - `.env` is ignored by Git; never commit it.
 
-Optional: change `PORT`, `BIND_ADDRESS`, `SESSION_HOURS`, `CORS_ORIGINS`, `AI_SERVICE_URL`.
+Optional: change `PORT`, `BIND_ADDRESS`, `SESSION_HOURS`, `CORS_ORIGINS`, `AI_SERVICE_URL`. Set
+`TRUST_PROXY=true` only when the API is behind a reverse proxy that supplies `X-Forwarded-For`;
+otherwise the header is ignored for rate limiting.
 
 ## 5. Install frontend dependencies
 
@@ -176,7 +182,8 @@ In a second terminal, verify:
 curl http://localhost:8080/api/health
 ```
 
-Expected: `{"status":"ok","database":"ok (MySQL 8.0.46)","time":"..."}`.
+Expected: `{"status":"ok","database":"ok","time":"..."}`. The health endpoint never exposes SQL
+errors or database details; check the backend console for those.
 
 | Error | Cause / fix |
 | --- | --- |

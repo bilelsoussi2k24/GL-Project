@@ -10,11 +10,15 @@ Schema changes are applied by the Java application, not by SQL files in this fol
 
 1. Additive only: `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN` for columns that do not
    exist yet, `CREATE INDEX` for missing indexes.
-2. Idempotent: running it twice changes nothing.
+2. Idempotent: running it twice changes nothing, and the whole run is serialised with a MySQL
+   advisory lock (`GET_LOCK`) so two starting instances cannot race.
 3. Non-destructive: no `DROP TABLE`, `DROP COLUMN`, `TRUNCATE` or data rewrites of existing profile
    fields.
 4. Safe on legacy data: the original dump is upgraded in place, staff IDs are backfilled and legacy
    password placeholders are detected rather than trusted.
+5. Administrator bootstrap: only an active account with a real hash counts as usable. An inactive
+   administrator is reactivated without a password reset, a placeholder hash is replaced once, and an
+   existing DOCTOR holding `ADMIN_EMAIL` is never modified (the migration reports the conflict).
 
 ## Adding a schema change
 

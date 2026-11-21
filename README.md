@@ -309,7 +309,8 @@ Check it in a second terminal:
 curl http://localhost:8080/api/health
 ```
 
-Expected: `{"status":"ok","database":"ok (MySQL 8.0.46)","time":"..."}`.
+Expected: `{"status":"ok","database":"ok","time":"..."}`. The public payload never includes
+SQL errors, host names or database versions; those go to the server log.
 
 - *`ClassNotFoundException: Main`* → in Git Bash use `MSYS_NO_PATHCONV=1 java -cp "out;lib/*" Main`
   (Windows classpath separator `;`, and Git Bash must not rewrite it).
@@ -397,6 +398,7 @@ Configuration is read from real environment variables first, then from a `.env` 
 | `DB_PASSWORD` | *(empty)* | MySQL password |
 | `BIND_ADDRESS` | `127.0.0.1` | Interface the API listens on |
 | `PORT` | `8080` | API port (`0`/invalid falls back to 8080) |
+| `TRUST_PROXY` | `false` | Honour `X-Forwarded-For`; enable only behind a reverse proxy you control |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the API |
 | `SESSION_HOURS` | `12` | Staff session lifetime |
 | `ADMIN_EMAIL` | `admin@haven.local` | First administrator email |
@@ -579,10 +581,14 @@ Request and response examples for every endpoint: [`docs/api-documentation.md`](
 | `DOCTOR` | Read/update own profile, read only assigned patients, manage own appointments and consultations | Any `/admin/*` route (403), another doctor's patient/appointment/consultation (404) |
 
 - Passwords: PBKDF2-HMAC-SHA256, 210 000 iterations, per-password salt. Minimum 8 characters with a
-  letter and a digit.
+  letter and a digit. Passwords are read exactly as typed; leading/trailing spaces are significant and
+  are never trimmed.
 - Sessions: random 32-byte token returned once; the database stores only its SHA-256 hash, with an
-  expiry. Logout, password change and deactivation revoke sessions.
-- Throttling: more than 8 failed logins for the same email and client within 10 minutes → 429.
+  expiry. Logout, password change and deactivation revoke sessions. Deactivating and reactivating a
+  doctor never makes an old token valid again.
+- Throttling: 8 failed logins per email and client address per 10 minutes, plus 50 per address per
+  10 minutes → 429. `X-Forwarded-For` is ignored unless `TRUST_PROXY=true`, so it cannot be spoofed to
+  bypass the limit.
 - The frontend route guard is only a convenience; every protected route re-checks the token and role
   on the server.
 
@@ -600,22 +606,35 @@ Optional environment variables: `API_BASE` (default `http://127.0.0.1:8080/api`)
 `ADMIN_PASSWORD`. The script creates uniquely named doctors and a patient, so it can run repeatedly
 against the same database. It covers:
 
-- health, login, wrong password, role mismatch, missing or expired token;
+- health (including that no database version is exposed), login, invalid credentials, role mismatch,
+  missing or expired token, non-string passwords;
+- password whitespace preservation for creation, sign-in, reset and change;
 - doctor creation, validation, duplicate email, search and status changes;
-- patient assignment and doctor scoping, cross-doctor 404s;
-- appointment booking/rescheduling/status, consultation creation, duplicate prevention and history;
+- atomically rolled-back patient creation (no orphan after a bad doctor id) and birth-date validation;
+- patient assignment and doctor scoping, cross-doctor 404s, consultation ownership;
+- appointment booking/rescheduling/cancellation/status, consultation creation, duplicate prevention and history;
 - hospital settings validation and public reflection; AI gateway behaviour;
-- password change and session revocation, deactivation/reactivation, account administration, stats.
+- forwarded-header spoofing cannot bypass login throttling;
+- password change and session revocation, deactivation/reactivation (old tokens stay dead), account
+  administration, stats.
 
-### Unit checks for password and token hashing
+### Java unit and bootstrap checks
 
 ```bat
-javac -encoding UTF-8 -d .tmp\test-classes -cp "backend\out" tests\java\PasswordHasherTest.java
-java -cp ".tmp\test-classes;backend\out" PasswordHasherTest
+javac -encoding UTF-8 -d .tmp\test-classes -cp "backend\out;backend\lib/*" tests\java\PasswordHasherTest.java tests\java\PasswordInputTest.java tests\java\AdministratorBootstrapTest.java
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" PasswordHasherTest
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" PasswordInputTest
+java -cp ".tmp\test-classes;backend\out;backend\lib/*" AdministratorBootstrapTest
 ```
 
-Covers hash format, correct/incorrect passwords, per-password salt, malformed and legacy hashes, the
-strength rule and SHA-256 token hashing.
+- `PasswordHasherTest` covers hash format, correct/incorrect passwords, per-password salt, malformed
+  and legacy hashes, the strength rule and SHA-256 token hashing.
+- `PasswordInputTest` proves leading/trailing whitespace is preserved and empty, non-string and
+  over-long passwords are rejected.
+- `AdministratorBootstrapTest` uses disposable `haven_test_boot_*` databases on a development MySQL
+  instance (`TEST_MYSQL_HOST_PORT`, default `127.0.0.1:3307`) and covers: empty database, existing
+  working administrator, inactive administrator, a DOCTOR holding `ADMIN_EMAIL`, a legacy placeholder
+  hash, multiple administrators and two concurrent starts.
 
 ### Frontend checks
 
@@ -643,30 +662,30 @@ data-loading effects. The build produces `frontend/dist/`.
 
 | Check | Result |
 | --- | --- |
-| Backend compilation (`javac`, also `--release 17`) | passes |
-| `tests/api_test.py` against MySQL 8.0.46 | 84/84 checks pass, twice in a row |
-| Legacy dump migration + data preservation | 23/23 checks pass |
+| Backend compilation (`javac`, `build.bat`, `build.sh`, also `--release 17`) | passes |
+| `tests/api_test.py` against MySQL 8.0.46 | **123/123 checks pass, twice in a row** |
+| Legacy dump migration + data preservation | rows unchanged (2 doctors, 3 patients, 1 appointment, 1 consultation); all 15 expected columns and indexes present; second run changed nothing |
 | `PasswordHasherTest` | all checks pass |
-| `npm run build` | passes |
-| `npm run lint` | 0 errors, 4 informational hints |
-| Production server (`npm start`) | `/`, `/doctor`, assets, `/api` proxy and 404 all behave |
-| Browser flow | admin and doctor dashboards, booking, "mark as seen", consultation notes, public page, logout |
-| AI service startup | dependencies install in a clean virtual environment; `/api/health` answers `configured: false`; the Java proxy returns 503 "not configured yet" |
-| AI answer with a live Gemini key | **not run here** (no key available) |
+| `PasswordInputTest` | all checks pass |
+| `AdministratorBootstrapTest` (7 scenarios) | all checks pass |
+| Frontend `npm ci`, `npm run lint`, `npm run build` | install and build pass; lint 0 errors, 4 informational `set-state-in-effect` hints |
+| AI service in a clean virtual environment | `pip install -r requirements.txt` passes, `compileall` passes, `/api/health` → `configured: false`, `/api/chat` → 503, empty message → 422 |
+| AI answer with a live Gemini key | **not run** (no key available) |
+| Browser click-through of the UI | **not repeated this sprint**; the frontend was rebuilt and linted, and the API contracts were exercised by the integration tests |
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
 | `Cannot reach the server` | Backend not running on 8080. Start it and check `/api/health`. |
-| `database: unavailable: Access denied` | Wrong `DB_USER`/`DB_PASSWORD` in `backend/.env`, or that MySQL user lacks access. |
+| `database: unavailable` | Wrong `DB_USER`/`DB_PASSWORD` in `backend/.env`, or that MySQL user lacks access; the backend log has the detailed error. |
 | `Unknown database 'hospital_db'` | The MySQL user cannot create schemas. Create it manually (Step 3) and restart the API. |
 | `Public Key Retrieval is not allowed` | Use the default `DB_URL` (it appends `allowPublicKeyRetrieval=true`) or add the flag yourself. |
 | `ClassNotFoundException: Main` | Wrong classpath separator. Windows: `"out;lib/*"`. Git Bash: prefix the command with `MSYS_NO_PATHCONV=1`. |
 | `Address already in use` | Port 8080 or 5173 is taken. Change `PORT`/the Vite proxy target, or stop the other process. |
 | Doctor account cannot sign in after importing the legacy dump | Placeholder hashes. Reset the password from **Accounts** or with `tool.SetPassword`. |
 | `Incorrect email or password` | Accounts are case-insensitive on email; check the account exists in **Accounts** and is active. |
-| 429 on sign-in | Too many failed attempts; wait 10 minutes or restart the API (the throttle is in memory). |
+| 429 on sign-in | Too many failed attempts for this email/address or from this address; wait 10 minutes or restart the API (the throttle is in memory). |
 | 401 after a while | Session expired (`SESSION_HOURS`); sign in again. |
 | Assistant always offline (503) | `backend_ai` is not running, `GEMINI_API_KEY` is unset, or `AI_SERVICE_URL` points elsewhere. |
 | Assistant 502 | Gemini rejected the call (quota, model, network); the Python console prints the reason. |

@@ -120,7 +120,7 @@ frontend/
     │   └── StaffLogin.jsx  role selector, email/password sign-in
     ├── admin/
     │   ├── AdminLayout.jsx sidebar and shell
-    │   ├── AdminData.jsx   API data provider (stats, doctors, patients, accounts, settings)
+    │   ├── AdminData.jsx   API data provider (doctors, stats, activity, own account)
     │   ├── Overview.jsx    totals, doctors snapshot, activity
     │   ├── Doctors.jsx     list, filters, create/edit/status/deactivate
     │   ├── DoctorModal.jsx doctor form
@@ -182,9 +182,11 @@ npm run build
 Expected: 0 lint errors (`oxlint` currently prints 4 informational `react(set-state-in-effect)` hints
 for fetch-on-mount effects) and a successful build. Both were run for this version.
 
-Browser flows verified against the real API: administrator and doctor sign-in, dashboards, patient and
-account lists, settings loaded from MySQL, the public page, the assistant's offline state, booking,
-"mark as seen", consultation notes persisting after reload, logout and the 401 redirect.
+Browser flows were verified against the real API in the previous sprint: administrator and doctor
+sign-in, dashboards, patient and account lists, settings loaded from MySQL, the public page, the
+assistant's offline state, booking, "mark as seen", consultation notes persisting after reload, logout
+and the 401 redirect. Sprint 10 rebuilt and linted the frontend and exercised every API contract
+through `tests/api_test.py`; it did not repeat the click-through.
 
 ## Troubleshooting
 
