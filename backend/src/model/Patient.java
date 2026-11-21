@@ -3,13 +3,13 @@ package model;
 import java.time.LocalDate;
 
 public class Patient {
-    private int id;
-    private String firstName;
-    private String lastName;
-    private LocalDate birthDate;
-    private String gender;
-    private String phone;
-    private String address;
+    private final int id;
+    private final String firstName;
+    private final String lastName;
+    private final LocalDate birthDate;
+    private final String gender;
+    private final String phone;
+    private final String address;
 
     public Patient(int id, String firstName, String lastName,
                    LocalDate birthDate, String gender,
@@ -33,6 +33,10 @@ public class Patient {
 
     public String getLastName() {
         return lastName;
+    }
+
+    public String getFullName() {
+        return (firstName + " " + lastName).replaceAll("\\s+", " ").strip();
     }
 
     public LocalDate getBirthDate() {

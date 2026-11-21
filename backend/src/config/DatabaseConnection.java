@@ -3,20 +3,25 @@ package config;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Statement;
 
-public class DatabaseConnection {
+/** Creates MySQL connections from configuration (DB_URL, DB_USER, DB_PASSWORD). */
+public final class DatabaseConnection {
 
-    private static final String URL =
-        "jdbc:mysql://localhost:3306/hospital_db";
+    private DatabaseConnection() {
+    }
 
-    public static Connection getConnection()
-            throws SQLException {
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(AppConfig.dbUrl(), AppConfig.dbUser(), AppConfig.dbPassword());
+    }
 
-        String username = System.getenv("DB_USER");
-        String password = System.getenv("DB_PASSWORD");
-
-        return DriverManager.getConnection(
-            URL, username, password
-        );
+    /** Database status for /api/health. */
+    public static String status() {
+        try (Connection con = getConnection(); Statement st = con.createStatement()) {
+            st.execute("SELECT 1");
+            return "ok (MySQL " + con.getMetaData().getDatabaseProductVersion() + ")";
+        } catch (SQLException e) {
+            return "unavailable: " + e.getMessage();
+        }
     }
 }
