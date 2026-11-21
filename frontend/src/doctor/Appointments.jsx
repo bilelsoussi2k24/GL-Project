@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { useDoctorData } from './DoctorData.jsx'
+import ConsultationModal from './ConsultationModal.jsx'
 import Modal from '../components/Modal.jsx'
 import Highlight from '../components/Highlight.jsx'
 import { useToast } from '../components/Toast.jsx'
@@ -14,12 +15,15 @@ import {
 const statusLabel = { scheduled: 'Scheduled', completed: 'Completed', missed: 'Missed', cancelled: 'Cancelled' }
 
 export default function Appointments() {
-  const { appointments, updateAppointment } = useDoctorData()
+  const { appointments, updateAppointment, consultationsFor } = useDoctorData()
   const { openAppointment } = useOutletContext()
   const toast = useToast()
   const [query, setQuery] = useState('')
   // Kept after closing so the dialog text stays during its exit animation.
   const [confirm, setConfirm] = useState({ open: false, appt: null })
+  const [consult, setConsult] = useState({ open: false, appt: null, key: 0 })
+  const openConsultation = (appt) => setConsult((c) => ({ open: true, appt, key: c.key + 1 }))
+  const closeConsultation = () => setConsult((c) => ({ ...c, open: false }))
 
   const q = query.trim()
   const rows = appointments.filter((a) => {
@@ -32,14 +36,25 @@ export default function Appointments() {
 
   const closeConfirm = () => setConfirm((c) => ({ ...c, open: false }))
 
-  const confirmCancel = () => {
+  const confirmCancel = async () => {
     const a = confirm.appt
     const previous = a.status
-    updateAppointment(a.id, { status: 'cancelled' })
     closeConfirm()
-    toast(`Cancelled ${a.patient.name}'s appointment`, {
-      action: { label: 'Undo', onClick: () => updateAppointment(a.id, { status: previous }) },
-    })
+    try {
+      await updateAppointment(a.id, { status: 'cancelled' })
+      toast(`Cancelled ${a.patient.name}'s appointment`, {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            updateAppointment(a.id, { status: previous }).catch((err) =>
+              toast(err.message, { tone: 'error' }),
+            )
+          },
+        },
+      })
+    } catch (err) {
+      toast(err.message, { tone: 'error' })
+    }
   }
 
   return (
@@ -109,6 +124,13 @@ export default function Appointments() {
                         <PillButton onClick={() => openAppointment(a)}>
                           <PencilIcon />Edit
                         </PillButton>
+                        {a.status === 'completed' && (
+                          <PillButton onClick={() => openConsultation(a)}>
+                            {consultationsFor(a.patientId).some((c) => c.appointmentId === a.id)
+                              ? 'Consultation'
+                              : 'Add notes'}
+                          </PillButton>
+                        )}
                         <PillButton
                           danger
                           onClick={() => setConfirm({ open: true, appt: a })}
@@ -163,6 +185,19 @@ export default function Appointments() {
           </p>
         )}
       </Modal>
+
+      {consult.key !== 0 && (
+        <ConsultationModal
+          key={consult.key}
+          open={consult.open}
+          appointment={consult.appt}
+          consultation={consultationsFor(consult.appt?.patientId).find(
+            (c) => c.appointmentId === consult.appt?.id,
+          )}
+          onClose={closeConsultation}
+          onSaved={(msg) => toast(msg)}
+        />
+      )}
     </div>
   )
 }

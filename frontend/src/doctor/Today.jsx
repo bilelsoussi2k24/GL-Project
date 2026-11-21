@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useOutletContext } from 'react-router-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { useDoctorData, byDateTime } from './DoctorData.jsx'
+import ConsultationModal from './ConsultationModal.jsx'
 import { useToast } from '../components/Toast.jsx'
 import useCountUp from '../hooks/useCountUp.js'
 import {
@@ -26,7 +27,7 @@ const statCard =
   'relative grid min-h-32 content-start gap-2 overflow-hidden rounded-[18px] border border-line bg-surface p-5.5 transition duration-300 hover:-translate-y-1 hover:shadow-lift'
 
 export default function Today() {
-  const { appointments, profile, updateAppointment } = useDoctorData()
+  const { appointments, profile, updateAppointment, consultationsFor } = useDoctorData()
   const { openAppointment } = useOutletContext()
   const toast = useToast()
   const navigate = useNavigate()
@@ -34,6 +35,15 @@ export default function Today() {
   const today = todayISO()
   const [selected, setSelected] = useState(today)
   const [justSeen, setJustSeen] = useState(null)
+  const [consult, setConsult] = useState({ open: false, appointment: null, key: 0 })
+  const openConsultation = (appointment) =>
+    setConsult((c) => ({ open: true, appointment, key: c.key + 1 }))
+  const closeConsultation = () => setConsult((c) => ({ ...c, open: false }))
+  const existingNote = consult.appointment
+    ? consultationsFor(consult.appointment.patientId).find(
+        (c) => c.appointmentId === consult.appointment.id,
+      )
+    : null
 
   const active = useMemo(() => appointments.filter((a) => a.status !== 'cancelled'), [appointments])
   const todays = active.filter((a) => a.date === today).sort(byDateTime)
@@ -63,12 +73,19 @@ export default function Today() {
   const dayAppts = active.filter((a) => a.date === selected).sort(byDateTime)
   const nowMins = now.getHours() * 60 + now.getMinutes()
 
-  const markSeen = (a) => {
-    updateAppointment(a.id, { status: 'completed' })
-    setJustSeen(a.id)
-    toast(`Marked ${a.patient.name} as seen`, {
-      action: { label: 'Undo', onClick: () => updateAppointment(a.id, { status: 'scheduled' }) },
-    })
+  const markSeen = async (a) => {
+    try {
+      await updateAppointment(a.id, { status: 'completed' })
+      setJustSeen(a.id)
+      toast(`Marked ${a.patient.name} as seen`, {
+        action: {
+          label: 'Add notes',
+          onClick: () => openConsultation({ ...a, status: 'completed' }),
+        },
+      })
+    } catch (err) {
+      toast(err.message, { tone: 'error' })
+    }
   }
 
   // "Dr. Okafor" style greeting once the doctor has entered a name in Profile.
@@ -237,8 +254,19 @@ export default function Today() {
                           </span>
                           <AnimatePresence mode="wait" initial={false}>
                             {a.status === 'completed' && (
-                              <motion.span key="seen" initial={{ scale: 0.3, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 15 }}>
+                              <motion.span
+                                key="seen"
+                                initial={{ scale: 0.3, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                transition={{ type: 'spring', stiffness: 500, damping: 15 }}
+                                className="inline-flex items-center gap-2"
+                              >
                                 <Badge tone="done"><CheckIcon width={14} height={14} />Seen</Badge>
+                                <PillButton onClick={() => openConsultation(a)}>
+                                  {consultationsFor(a.patientId).some((c) => c.appointmentId === a.id)
+                                    ? 'Consultation'
+                                    : 'Add notes'}
+                                </PillButton>
                               </motion.span>
                             )}
                             {a.status === 'missed' && <Badge key="missed" tone="missed">Missed</Badge>}
@@ -265,6 +293,17 @@ export default function Today() {
           <QuickItem icon={UserIcon} onClick={() => navigate('/doctor/profile#hours')}>Update my working hours</QuickItem>
         </Panel>
       </div>
+
+      {consult.key !== 0 && (
+        <ConsultationModal
+          key={consult.key}
+          open={consult.open}
+          appointment={consult.appointment}
+          consultation={existingNote}
+          onClose={closeConsultation}
+          onSaved={(msg) => toast(msg)}
+        />
+      )}
     </div>
   )
 }

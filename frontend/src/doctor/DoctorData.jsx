@@ -1,49 +1,56 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { api } from '../services/api.js'
-import { getSession } from '../services/auth.js'
-import { useToast } from '../components/Toast.jsx'
 import DataGate from '../components/DataGate.jsx'
 
-// Doctor data.
-// - Appointments and patients come from the Java backend (/api/doctors/me/...).
-// - The profile is kept in memory: the backend has no profile endpoint yet.
-// Appointment changes show straight away and then save to the server;
-// if the server refuses, the list is reloaded and an error toast is shown.
+// Doctor workspace data.
+// Everything here comes from the Java API and MySQL: the profile, the doctor's
+// patients, their appointments and their consultation notes. The doctor is
+// identified by the session token on the server, never by an id sent from here.
 
 const emptyProfile = () => ({
   name: '',
+  firstName: '',
+  lastName: '',
   specialty: '',
-  staffId: getSession()?.id ?? '',
+  staffId: '',
   phone: '',
   email: '',
   office: '',
-  workDays: [1, 2, 3, 4, 5], // 0 = Sun … 6 = Sat
+  workDays: [1, 2, 3, 4, 5],
   firstAppointment: '08:00',
   lastAppointment: '17:00',
   visitLength: 30,
   passwordChangedAt: null,
 })
 
-// ---------- mapping between the Java API and the screens ----------
-
-// Patient database id 7 is shown as "HH-000007" (the format the appointment form uses).
-const toHhId = (id) => `HH-${String(id).padStart(6, '0')}`
-const fromHhId = (hhId) => Number(/^HH-(\d{6})$/i.exec(hhId?.trim() ?? '')?.[1]) || null
+const profileFromApi = (d) => ({
+  name: d.name ?? '',
+  firstName: d.firstName ?? '',
+  lastName: d.lastName ?? '',
+  specialty: d.specialty ?? '',
+  staffId: d.staffId ?? '',
+  phone: d.phone ?? '',
+  email: d.email ?? '',
+  office: d.office ?? '',
+  workDays: Array.isArray(d.workDays) && d.workDays.length ? d.workDays : [1, 2, 3, 4, 5],
+  firstAppointment: d.firstAppointment ?? '08:00',
+  lastAppointment: d.lastAppointment ?? '17:00',
+  visitLength: d.visitLength ?? 30,
+  passwordChangedAt: d.passwordChangedAt ?? null,
+})
 
 const patientName = (p) => [p.firstName, p.lastName].filter(Boolean).join(' ')
 
 // Java appointment → screen appointment.
-function fromApi(a, patientsById, visitLength) {
-  const p = patientsById.get(a.patientId)
-  // LocalDateTime.toString(): "2026-11-25T10:00" or "2026-11-25T10:00:30"
-  const [date, rest = ''] = a.appointmentDate.split('T')
+function appointmentFromApi(a, visitLength) {
+  const [date, rest = ''] = String(a.appointmentDate).split('T')
   return {
     id: a.id,
     patientId: a.patientId,
     patient: {
-      name: p ? patientName(p) : `Patient #${a.patientId}`,
-      hhId: toHhId(a.patientId),
-      phone: p?.phone ?? '',
+      name: a.patient?.name || `Patient #${a.patientId}`,
+      hhId: a.patient?.hhId || `HH-${String(a.patientId).padStart(6, '0')}`,
+      phone: a.patient?.phone ?? '',
     },
     reason: a.reason ?? '',
     date,
@@ -53,10 +60,25 @@ function fromApi(a, patientsById, visitLength) {
   }
 }
 
-// Find the doctor's patient that the form refers to: by HH id first, then by full name.
+function consultationFromApi(c) {
+  const [date, rest = ''] = String(c.consultationDate ?? '').split('T')
+  return {
+    id: c.id,
+    appointmentId: c.appointmentId,
+    patientId: c.patientId,
+    patientName: c.patientName ?? '',
+    diagnosis: c.diagnosis ?? '',
+    treatment: c.treatment ?? '',
+    notes: c.notes ?? '',
+    date,
+    time: rest.slice(0, 5),
+  }
+}
+
+// Find the doctor's patient the appointment form refers to: by HH id first, then by full name.
 // eslint-disable-next-line react-refresh/only-export-components
 export function findPatient(patients, { hhId, name }) {
-  const id = fromHhId(hhId)
+  const id = Number(/^HH-(\d{6})$/i.exec(hhId?.trim() ?? '')?.[1]) || null
   if (id) return patients.find((p) => p.id === id)
   const n = name.trim().toLowerCase()
   return patients.find((p) => patientName(p).toLowerCase() === n)
@@ -65,21 +87,24 @@ export function findPatient(patients, { hhId, name }) {
 const DoctorContext = createContext(null)
 
 export function DoctorDataProvider({ children }) {
-  const toast = useToast()
   const [appointments, setAppointments] = useState([])
   const [patients, setPatients] = useState([])
+  const [consultations, setConsultations] = useState([])
   const [profile, setProfileState] = useState(emptyProfile)
   const [status, setStatus] = useState({ loading: true, error: '' })
-  const latest = useRef({ patients, profile })
-  useEffect(() => {
-    latest.current = { patients, profile }
-  })
 
   const fetchAll = useCallback(async () => {
-    const [pts, list] = await Promise.all([api('/doctors/me/patients'), api('/doctors/me/appointments')])
-    const byId = new Map(pts.map((p) => [p.id, p]))
+    const [me, pts, list, notes] = await Promise.all([
+      api('/doctors/me'),
+      api('/doctors/me/patients'),
+      api('/doctors/me/appointments'),
+      api('/doctors/me/consultations?limit=100'),
+    ])
+    const visitLength = me.visitLength ?? 30
+    setProfileState(profileFromApi(me))
     setPatients(pts)
-    setAppointments(list.map((a) => fromApi(a, byId, latest.current.profile.visitLength)))
+    setAppointments(list.map((a) => appointmentFromApi(a, visitLength)))
+    setConsultations(notes.map(consultationFromApi))
   }, [])
 
   // `retry` shows the spinner again first.
@@ -90,6 +115,7 @@ export function DoctorDataProvider({ children }) {
         await fetchAll()
         setStatus({ loading: false, error: '' })
       } catch (err) {
+        if (err.status === 401) return
         setStatus({ loading: false, error: err.message })
       }
     },
@@ -100,67 +126,127 @@ export function DoctorDataProvider({ children }) {
     load()
   }, [load])
 
-  const fail = useCallback(
-    (err) => {
-      toast(err.message, { tone: 'error' })
-      fetchAll().catch(() => {})
-    },
-    [toast, fetchAll],
-  )
-
   const addAppointment = useCallback(
-    (data) => {
-      const tempId = `tmp${Date.now()}`
-      const patient = findPatient(latest.current.patients, data.patient)
-      const appt = { ...data, id: tempId, status: 'scheduled' }
-      if (patient) {
-        appt.patientId = patient.id
-        appt.patient = { name: patientName(patient), hhId: toHhId(patient.id), phone: patient.phone ?? data.patient.phone }
-      }
-      setAppointments((list) => [...list, appt])
-      if (!patient) {
-        // Deferred so it shows after the form's own toast.
-        queueMicrotask(() => fail(new Error(`${data.patient.name} is not one of your patients.`)))
-        return appt
-      }
-      api('/doctors/me/appointments', {
+    async (data) => {
+      const saved = await api('/doctors/me/appointments', {
         method: 'POST',
-        body: { patientId: patient.id, appointmentDate: `${data.date}T${data.time}:00`, reason: data.reason },
+        body: {
+          patientId: data.patientId,
+          appointmentDate: `${data.date}T${data.time}:00`,
+          reason: data.reason,
+        },
       })
-        .then((saved) => setAppointments((list) => list.map((a) => (a.id === tempId ? { ...a, id: saved.id } : a))))
-        .catch(fail)
-      return appt
+      const appointment = appointmentFromApi(saved, profile.visitLength)
+      setAppointments((list) => [...list, appointment])
+      return appointment
     },
-    [fail],
+    [profile.visitLength],
   )
 
-  // The backend can only change an appointment's status; other edits are refused.
-  const updateAppointment = useCallback(
-    (id, patch) => {
-      setAppointments((list) => list.map((a) => (a.id === id ? { ...a, ...patch } : a)))
-      const { status: newStatus, ...rest } = patch
-      if (Object.keys(rest).length) {
-        queueMicrotask(() => fail(new Error('The server can’t change a booking yet.')))
-        return
-      }
-      if (typeof id !== 'number') return // still being created
-      api(`/doctors/me/appointments/${id}/status`, { method: 'PATCH', body: { status: newStatus } }).catch(fail)
-    },
-    [fail],
-  )
+  // Status-only changes use the status endpoint; a reschedule or patient change updates the booking.
+  const updateAppointment = useCallback(async (id, patch) => {
+    const keys = Object.keys(patch)
+    if (keys.length === 1 && patch.status) {
+      const saved = await api(`/doctors/me/appointments/${id}/status`, {
+        method: 'PATCH',
+        body: { status: patch.status },
+      })
+      setAppointments((list) =>
+        list.map((a) => (a.id === id ? { ...a, status: saved.status } : a)),
+      )
+      return
+    }
 
-  // Profile: kept in memory. Accepts an object or an updater function. Returns a promise.
+    const saved = await api(`/doctors/me/appointments/${id}`, {
+      method: 'PUT',
+      body: {
+        patientId: patch.patientId,
+        appointmentDate: `${patch.date}T${patch.time}:00`,
+        reason: patch.reason,
+      },
+    })
+    setAppointments((list) =>
+      list.map((a) => (a.id === id ? appointmentFromApi(saved, a.duration) : a)),
+    )
+  }, [])
+
+  // Saves the doctor-editable profile fields and returns the stored profile.
   const setProfile = useCallback(async (next) => {
-    const value = typeof next === 'function' ? next(latest.current.profile) : next
-    setProfileState(value)
-    return value
+    const saved = await api('/doctors/me', {
+      method: 'PATCH',
+      body: {
+        name: next.name,
+        phone: next.phone,
+        office: next.office,
+        email: next.email,
+        workDays: next.workDays,
+        firstAppointment: next.firstAppointment,
+        lastAppointment: next.lastAppointment,
+        visitLength: next.visitLength,
+      },
+    })
+    const stored = profileFromApi(saved)
+    setProfileState(stored)
+    setAppointments((list) => list.map((a) => ({ ...a, duration: stored.visitLength })))
+    return stored
   }, [])
 
   const patchProfile = useCallback((patch) => setProfileState((p) => ({ ...p, ...patch })), [])
 
+  const addConsultation = useCallback(async ({ appointmentId, diagnosis, treatment, notes }) => {
+    const saved = await api('/doctors/me/consultations', {
+      method: 'POST',
+      body: { appointmentId, diagnosis, treatment, notes },
+    })
+    const consultation = consultationFromApi(saved)
+    setConsultations((list) => [consultation, ...list])
+    return consultation
+  }, [])
+
+  const updateConsultation = useCallback(async (id, { diagnosis, treatment, notes }) => {
+    const saved = await api(`/doctors/me/consultations/${id}`, {
+      method: 'PUT',
+      body: { diagnosis, treatment, notes },
+    })
+    const consultation = consultationFromApi(saved)
+    setConsultations((list) => list.map((c) => (c.id === id ? consultation : c)))
+    return consultation
+  }, [])
+
+  const consultationsFor = useCallback(
+    (patientId) => consultations.filter((c) => c.patientId === patientId),
+    [consultations],
+  )
+
   const value = useMemo(
-    () => ({ appointments, patients, profile, setProfile, patchProfile, addAppointment, updateAppointment, reload: load }),
-    [appointments, patients, profile, setProfile, patchProfile, addAppointment, updateAppointment, load],
+    () => ({
+      appointments,
+      patients,
+      consultations,
+      profile,
+      setProfile,
+      patchProfile,
+      addAppointment,
+      updateAppointment,
+      addConsultation,
+      updateConsultation,
+      consultationsFor,
+      reload: load,
+    }),
+    [
+      appointments,
+      patients,
+      consultations,
+      profile,
+      setProfile,
+      patchProfile,
+      addAppointment,
+      updateAppointment,
+      addConsultation,
+      updateConsultation,
+      consultationsFor,
+      load,
+    ],
   )
 
   if (status.loading || status.error) return <DataGate error={status.error} onRetry={() => load(true)} />

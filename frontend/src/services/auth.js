@@ -1,44 +1,63 @@
-// Temporary mock login: the Java backend has no login endpoint yet, so any staff ID and password work.
-// When it does, replace the body of `login` with a real API call, e.g.:
-//   const session = await api('/auth/login', { method: 'POST', body: { role, id, password } })
+import { api, SESSION_KEY, readSession, clearSession } from './api.js'
 
-const KEY = 'haven.session'
+// Real authentication against the Java API. The server issues an opaque token,
+// stores only its hash, and enforces expiry and role checks on every request.
+// The session below mirrors the server response for the UI.
 
-export async function login({ role, id, password, remember }) {
-  await new Promise((r) => setTimeout(r, 900)) // simulate network delay
-  if (!id || !password) throw new Error('Enter your staff ID and password.')
-
-  const session = { role, id, signedInAt: Date.now() }
+function store(session, remember) {
   try {
-    const store = remember ? localStorage : sessionStorage
-    store.setItem(KEY, JSON.stringify(session))
+    clearSession()
+    const target = remember ? localStorage : sessionStorage
+    target.setItem(SESSION_KEY, JSON.stringify(session))
   } catch {
-    // Storage can be blocked (private mode); the session just won't persist.
+    // Storage can be blocked (private mode); the session then lasts for this page only.
   }
+}
+
+export async function login({ role, email, password, remember }) {
+  if (!email || !password) throw new Error('Enter your email and password.')
+
+  const data = await api('/auth/login', {
+    method: 'POST',
+    auth: false,
+    body: { email: email.trim(), password, role },
+  })
+
+  const session = {
+    token: data.token,
+    expiresAt: data.expiresAt,
+    role: String(data.user.role).toLowerCase(),
+    id: data.user.id,
+    email: data.user.email,
+    name: data.user.fullName,
+    doctorId: data.user.doctorId,
+    signedInAt: Date.now(),
+  }
+  store(session, remember)
   return session
 }
 
 export function getSession() {
+  return readSession()
+}
+
+export async function logout() {
   try {
-    const raw = localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY)
-    return raw ? JSON.parse(raw) : null
+    if (readSession()) await api('/auth/logout', { method: 'POST' })
   } catch {
-    return null
+    // The token may already be invalid; clearing the local session is what matters.
+  } finally {
+    clearSession()
   }
 }
 
-export function logout() {
-  try {
-    localStorage.removeItem(KEY)
-    sessionStorage.removeItem(KEY)
-  } catch {
-    /* ignore */
-  }
+export function changePassword(current, next) {
+  return api('/auth/password', {
+    method: 'POST',
+    body: { currentPassword: current, newPassword: next },
+  })
 }
 
-// Mock: the Java backend has no password endpoint yet.
-export async function changePassword(current, next) {
-  await new Promise((r) => setTimeout(r, 700))
-  if (!current || !next) throw new Error('Enter your current password.')
-  return { passwordChangedAt: Date.now() }
+export function updateAccount({ fullName, email }) {
+  return api('/auth/account', { method: 'PATCH', body: { fullName, email } })
 }

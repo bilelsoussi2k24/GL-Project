@@ -125,6 +125,7 @@ const badgeTones = {
   scheduled: 'bg-primary-soft text-[#2a4766]',
   missed: 'bg-peach text-peach-ink',
   leave: 'bg-peach text-peach-ink',
+  inactive: 'bg-[#eef0f3] text-muted',
   cancelled: 'bg-[#eef0f3] text-muted',
 }
 

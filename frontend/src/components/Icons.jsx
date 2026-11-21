@@ -91,6 +91,9 @@ export const MapPinIcon = (p) => (
 export const TrashIcon = (p) => (
   <svg {...base} width={14} height={14} {...p}><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
 )
+export const KeyIcon = (p) => (
+  <svg {...base} {...p}><circle cx="8" cy="15" r="4" /><path d="M11 12l7-7M15 8l3 3" /></svg>
+)
 export const CheckIcon = (p) => (
   <svg {...base} {...p}><path d="M20 6L9 17l-5-5" /></svg>
 )

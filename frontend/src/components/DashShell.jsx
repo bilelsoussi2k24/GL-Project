@@ -96,9 +96,9 @@ export default function DashShell({ nav, home, subtitle, card, label, children }
 
           <button
             type="button"
-            onClick={() => {
-              logout()
-              navigate('/login')
+            onClick={async () => {
+              await logout()
+              navigate('/login', { replace: true })
             }}
             className={cx(linkBase, 'mt-auto text-white hover:bg-white/8')}
           >

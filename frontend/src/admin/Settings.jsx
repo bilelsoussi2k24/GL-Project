@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useAdminData } from './AdminData.jsx'
 import { useToast } from '../components/Toast.jsx'
 import ChangePassword from '../components/ChangePassword.jsx'
-import { loadHospital, saveHospital } from '../services/hospital.js'
+import { fetchHospital, loadHospital, saveHospital } from '../services/hospital.js'
 import { toMinutes } from '../utils/date.js'
 import { Button, Field, PageHeader, Panel, SaveButton, UnsavedBar } from '../components/ui.jsx'
 
@@ -14,6 +14,7 @@ const toForm = (h, account) => ({
   email: h.email,
   street: h.street,
   cityState: h.cityState,
+  parking: h.parking ?? '',
   opens: h.visiting.start ?? '',
   closes: h.visiting.end ?? '',
   maxVisitors: h.visiting.maxVisitors,
@@ -30,8 +31,27 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
   const [pwOpen, setPwOpen] = useState(false)
-
+  const dirtyRef = useRef(false)
   const dirty = JSON.stringify(form) !== JSON.stringify(saved)
+
+  // Kept in a ref so the one-time hospital load never overwrites user edits.
+  useEffect(() => {
+    dirtyRef.current = dirty
+  }, [dirty])
+
+  // Hospital details live in MySQL; load the stored values once they arrive.
+  useEffect(() => {
+    let alive = true
+    fetchHospital().then((h) => {
+      if (!alive || dirtyRef.current) return
+      const next = toForm(h, account)
+      setSaved(next)
+      setForm(next)
+    })
+    return () => {
+      alive = false
+    }
+  }, [account])
 
   useEffect(() => {
     if (!dirty) return
@@ -49,6 +69,7 @@ export default function Settings() {
     const errs = {}
     if (!form.name.trim()) errs.name = 'Enter the hospital name.'
     if (form.email && !form.email.startsWith('[') && !/^\S+@\S+\.\S+$/.test(form.email)) errs.email = 'Enter a valid email.'
+    if (!form.adminName.trim()) errs.adminName = 'Enter your name.'
     if (form.adminEmail && !/^\S+@\S+\.\S+$/.test(form.adminEmail)) errs.adminEmail = 'Enter a valid email.'
     if (form.opens && form.closes && toMinutes(form.closes) <= toMinutes(form.opens)) {
       errs.closes = 'Must be after opening time.'
@@ -64,16 +85,15 @@ export default function Settings() {
 
     setSaving(true)
     try {
-      const current = loadHospital()
       await saveHospital({
-        ...current,
         name: form.name.trim(),
         phone: form.phone.trim(),
         erNumber: form.erNumber.trim(),
         email: form.email.trim(),
         street: form.street.trim(),
         cityState: form.cityState.trim(),
-        visiting: { ...current.visiting, start: form.opens || null, end: form.closes || null, maxVisitors: visitors },
+        parking: form.parking.trim(),
+        visiting: { start: form.opens || null, end: form.closes || null, maxVisitors: visitors },
       })
       await setAccount({ name: form.adminName.trim(), email: form.adminEmail.trim() })
     } catch (err) {
@@ -98,7 +118,7 @@ export default function Settings() {
 
   return (
     <div className="grid max-w-280 gap-6">
-      <PageHeader title="Settings" sub="Hospital details, notifications and your account.">
+      <PageHeader title="Settings" sub="Hospital details, visiting hours and your account.">
         <SaveButton dirty={dirty} saving={saving} saved={savedFlash} onClick={save} />
       </PageHeader>
 
@@ -114,6 +134,7 @@ export default function Settings() {
           {field('email', 'Email', { type: 'email' })}
           {field('street', 'Street address')}
           {field('cityState', 'City and state')}
+          {field('parking', 'Parking details')}
         </div>
       </Panel>
 

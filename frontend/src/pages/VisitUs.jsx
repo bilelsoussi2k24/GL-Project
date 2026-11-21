@@ -8,6 +8,7 @@ import { ripple } from '../hooks/ripple.js'
 import {
   PlusIcon, PlusSquareIcon, ClockIcon, PhoneIcon, CarIcon, NavIcon, CopyIcon, CheckIcon,
 } from '../components/Icons.jsx'
+import HospitalAssistant from '../components/HospitalAssistant.jsx'
 import { EASE, cx, revealUp } from '../components/ui.jsx'
 
 const steps = [
@@ -551,6 +552,8 @@ export default function VisitUs() {
           </div>
         </div>
       </section>
+
+      <HospitalAssistant />
 
       <div className="pointer-events-none fixed inset-x-0 bottom-7 z-[100] flex justify-center" role="status" aria-live="polite">
         <AnimatePresence>

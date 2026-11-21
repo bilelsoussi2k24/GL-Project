@@ -1,56 +1,106 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { api } from '../services/api.js'
+import { updateAccount } from '../services/auth.js'
+import DataGate from '../components/DataGate.jsx'
 
-// Admin data, held in memory for this session.
-// The Java backend has no admin endpoints yet; when it does, load these through
-// services/api.js and call it inside the actions below.
+// Administrator data, loaded from the Java API and MySQL.
+// Every action calls the backend and then refreshes the affected data, so the
+// screens always show what is actually stored.
 
 const AdminContext = createContext(null)
 
 export function AdminDataProvider({ children }) {
   const [doctors, setDoctors] = useState([])
+  const [stats, setStats] = useState(null)
+  const [activity, setActivity] = useState([])
   const [account, setAccountState] = useState({ name: '', email: '' })
+  const [status, setStatus] = useState({ loading: true, error: '' })
 
-  const addDoctor = useCallback((data) => {
-    setDoctors((list) => {
-      // Staff IDs count up from DR-0001
-      const nextNum = Math.max(0, ...list.map((d) => Number(d.staffId.slice(3)) || 0)) + 1
-      return [...list, { ...data, id: `d${Date.now()}`, staffId: `DR-${String(nextNum).padStart(4, '0')}` }]
-    })
+  const load = useCallback(async (initial = false) => {
+    if (initial) setStatus({ loading: true, error: '' })
+    try {
+      const [doctorList, statsData, activityData, me] = await Promise.all([
+        api('/admin/doctors'),
+        api('/admin/stats'),
+        api('/admin/activity'),
+        api('/auth/me'),
+      ])
+      setDoctors(doctorList)
+      setStats(statsData)
+      setActivity(activityData)
+      setAccountState({ name: me.fullName ?? '', email: me.email })
+      setStatus({ loading: false, error: '' })
+    } catch (err) {
+      if (err.status === 401) return
+      setStatus({ loading: false, error: err.message })
+    }
   }, [])
 
-  const updateDoctor = useCallback((id, patch) => {
-    setDoctors((list) => list.map((d) => (d.id === id ? { ...d, ...patch } : d)))
-  }, [])
+  useEffect(() => {
+    load(true)
+  }, [load])
 
-  // Returns a function that puts the doctor back at the same position (for Undo).
-  const removeDoctor = useCallback((id) => {
-    let removed
-    let index
-    setDoctors((list) => {
-      index = list.findIndex((d) => d.id === id)
-      removed = list[index]
-      return list.filter((d) => d.id !== id)
-    })
-    return () =>
-      setDoctors((list) => {
-        if (!removed || list.some((d) => d.id === removed.id)) return list
-        const copy = [...list]
-        copy.splice(index, 0, removed)
-        return copy
+  const refresh = useCallback(() => load(false), [load])
+
+  // Creates the login account and doctor profile on the server.
+  const addDoctor = useCallback(
+    async (data) => {
+      const created = await api('/admin/doctors', {
+        method: 'POST',
+        body: {
+          firstName: data.firstName,
+          lastName: data.lastName,
+          specialty: data.specialty,
+          phone: data.phone || null,
+          office: data.office || null,
+          email: data.email,
+          password: data.password,
+          status: data.status,
+        },
       })
-  }, [])
+      await refresh()
+      return created
+    },
+    [refresh],
+  )
 
-  // Async so Settings can await it once there is a real endpoint.
+  // A status-only change uses the dedicated endpoint; anything else updates the profile.
+  const updateDoctor = useCallback(
+    async (id, patch) => {
+      if (patch && Object.keys(patch).length === 1 && patch.status) {
+        await api(`/admin/doctors/${id}/status`, { method: 'PATCH', body: { status: patch.status } })
+      } else {
+        await api(`/admin/doctors/${id}`, { method: 'PUT', body: patch })
+      }
+      await refresh()
+    },
+    [refresh],
+  )
+
+  // Deactivation keeps every medical record; the account can no longer sign in.
+  const removeDoctor = useCallback(
+    async (id) => {
+      const result = await api(`/admin/doctors/${id}`, { method: 'DELETE' })
+      await refresh()
+      return result
+    },
+    [refresh],
+  )
+
   const setAccount = useCallback(async (next) => {
-    setAccountState(next)
-    return next
+    const saved = await updateAccount({ fullName: next.name, email: next.email })
+    setAccountState({ name: saved.fullName, email: saved.email })
+    return { name: saved.fullName, email: saved.email }
   }, [])
 
   const value = useMemo(
-    () => ({ doctors, account, setAccount, addDoctor, updateDoctor, removeDoctor }),
-    [doctors, account, setAccount, addDoctor, updateDoctor, removeDoctor],
+    () => ({ doctors, stats, activity, account, setAccount, addDoctor, updateDoctor, removeDoctor, refresh }),
+    [doctors, stats, activity, account, setAccount, addDoctor, updateDoctor, removeDoctor, refresh],
   )
 
+  if (status.loading || status.error) {
+    return <DataGate error={status.error} onRetry={() => load(true)} />
+  }
   return <AdminContext.Provider value={value}>{children}</AdminContext.Provider>
 }
 
@@ -62,4 +112,4 @@ export function useAdminData() {
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
-export const statusLabel = { active: 'Active', leave: 'On leave' }
+export const statusLabel = { active: 'Active', leave: 'On leave', inactive: 'Deactivated' }

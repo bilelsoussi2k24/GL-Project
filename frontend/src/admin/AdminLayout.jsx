@@ -4,11 +4,13 @@ import { AdminDataProvider } from './AdminData.jsx'
 import DoctorModal from './DoctorModal.jsx'
 import DashShell from '../components/DashShell.jsx'
 import { ToastProvider, useToast } from '../components/Toast.jsx'
-import { GridIcon, StethoscopeIcon, GearIcon } from '../components/Icons.jsx'
+import { GridIcon, StethoscopeIcon, UserIcon, GearIcon, ShieldIcon } from '../components/Icons.jsx'
 
 const nav = [
   { to: '/admin', label: 'Overview', icon: GridIcon, end: true },
   { to: '/admin/doctors', label: 'Doctors', icon: StethoscopeIcon },
+  { to: '/admin/patients', label: 'Patients', icon: UserIcon },
+  { to: '/admin/users', label: 'Accounts', icon: ShieldIcon },
   { to: '/admin/settings', label: 'Settings', icon: GearIcon },
 ]
 

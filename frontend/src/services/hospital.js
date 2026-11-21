@@ -1,41 +1,46 @@
 import { useEffect, useState } from 'react'
+import { api } from './api.js'
 import { hospital as defaults } from '../config/hospital.js'
 
-// Hospital details edited by the admin in Settings and shown on the public pages.
-// The Java backend has no endpoint for these yet, so they are saved in this browser's localStorage.
-// Later, replace loadHospital/saveHospital with GET/PUT calls through services/api.js.
+// Hospital details shown on the public page. They live in MySQL
+// (hospital_settings) and are edited by the administrator in Settings.
 
-const KEY = 'haven.hospital'
 const EVENT = 'haven:hospital'
+let cache = null
 
 export function loadHospital() {
+  return cache ?? defaults
+}
+
+export async function fetchHospital() {
   try {
-    const saved = JSON.parse(localStorage.getItem(KEY))
-    if (!saved) return defaults
-    return { ...defaults, ...saved, visiting: { ...defaults.visiting, ...saved.visiting } }
+    const data = await api('/public/hospital', { auth: false })
+    cache = data
+    return data
   } catch {
-    return defaults
+    return loadHospital()
   }
 }
 
+/** Saves the hospital details (administrator only). */
 export async function saveHospital(data) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(data))
-  } catch {
-    // Storage blocked: the change lasts until the page reloads.
-  }
+  const saved = await api('/admin/settings', { method: 'PUT', body: data })
+  cache = saved
   window.dispatchEvent(new Event(EVENT))
-  return data
+  return saved
 }
 
 // Current hospital details; re-renders when Settings saves (in this tab or another).
 export function useHospital() {
   const [data, setData] = useState(loadHospital)
   useEffect(() => {
+    let alive = true
+    fetchHospital().then((value) => alive && setData(value))
     const refresh = () => setData(loadHospital())
     window.addEventListener(EVENT, refresh)
     window.addEventListener('storage', refresh)
     return () => {
+      alive = false
       window.removeEventListener(EVENT, refresh)
       window.removeEventListener('storage', refresh)
     }

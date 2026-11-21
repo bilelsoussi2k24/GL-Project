@@ -17,11 +17,14 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
   const { appointments, patients, profile, addAppointment, updateAppointment } = useDoctorData()
   const [form, setForm] = useState(() => toForm(appointment))
   const [errors, setErrors] = useState({})
+  const [formError, setFormError] = useState('')
+  const [saving, setSaving] = useState(false)
   const isEdit = !!appointment
 
   const set = (field) => (e) => {
     setForm((f) => ({ ...f, [field]: e.target.value }))
     setErrors((er) => ({ ...er, [field]: undefined, conflict: undefined }))
+    setFormError('')
   }
 
   // Soft warnings: outside working days or hours (still allowed).
@@ -37,7 +40,7 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
     }
   }
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault()
     const errs = {}
     if (!form.name.trim()) errs.name = 'Enter the patient name.'
@@ -51,30 +54,38 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
       )
       if (clash) errs.conflict = `You already have ${clash.patient.name} at ${clash.time} that day.`
     }
-    // The backend books only patients assigned to this doctor, and can't edit a booking yet.
-    if (!errs.name && !errs.hhId && !isEdit && !findPatient(patients, { name: form.name, hhId: form.hhId })) {
+    const patient = findPatient(patients, { name: form.name, hhId: form.hhId })
+    if (!errs.name && !errs.hhId && !patient) {
       errs.name = 'Not one of your patients. Use their full name or HH number.'
-    }
-    if (isEdit && !errs.conflict) {
-      errs.conflict = 'The server can’t change a booking yet. Cancel it and book a new one instead.'
     }
     setErrors(errs)
     if (Object.keys(errs).length) return
 
-    const data = {
-      patient: { name: form.name.trim(), hhId: form.hhId.trim().toUpperCase(), phone: form.phone.trim() },
-      reason: form.reason.trim(),
-      date: form.date,
-      time: form.time,
+    setSaving(true)
+    setFormError('')
+    try {
+      if (isEdit) {
+        await updateAppointment(appointment.id, {
+          patientId: patient.id,
+          reason: form.reason.trim(),
+          date: form.date,
+          time: form.time,
+        })
+        onSaved?.(`Updated ${patient.firstName} ${patient.lastName}'s appointment`)
+      } else {
+        await addAppointment({
+          patientId: patient.id,
+          reason: form.reason.trim(),
+          date: form.date,
+          time: form.time,
+        })
+        onSaved?.(`Booked ${patient.firstName} ${patient.lastName} for ${form.date} at ${form.time}`)
+      }
+      onClose()
+    } catch (err) {
+      setSaving(false)
+      setFormError(err.message)
     }
-    if (isEdit) {
-      updateAppointment(appointment.id, data)
-      onSaved?.(`Updated ${data.patient.name}'s appointment`)
-    } else {
-      addAppointment({ ...data, duration: profile.visitLength })
-      onSaved?.(`Booked ${data.patient.name} for ${data.date} at ${data.time}`)
-    }
-    onClose()
   }
 
   const field = (key, label, props = {}) => (
@@ -97,7 +108,9 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" form="appt-form">{isEdit ? 'Save changes' : 'Book appointment'}</Button>
+          <Button type="submit" form="appt-form" disabled={saving}>
+            {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Book appointment'}
+          </Button>
         </>
       }
     >
@@ -110,6 +123,7 @@ export default function AppointmentModal({ open, onClose, appointment, onSaved }
         {field('time', 'Time', { input: { type: 'time', step: 300 } })}
 
         {errors.conflict && <Alert error className="sm:col-span-2">{errors.conflict}</Alert>}
+        {formError && <Alert error className="sm:col-span-2">{formError}</Alert>}
         {warnings.map((w) => (
           <Alert key={w} className="sm:col-span-2">{w}</Alert>
         ))}

@@ -9,8 +9,8 @@ import {
 import { Button, FieldError, Spinner, cx, fadeUp, textLinkClass } from '../components/ui.jsx'
 
 const roles = {
-  doctor: { label: 'Doctor', idPlaceholder: 'Staff ID (DR-…) or email', home: '/doctor' },
-  admin: { label: 'Administrator', idPlaceholder: 'Staff ID (AD-…) or email', home: '/admin' },
+  doctor: { label: 'Doctor', placeholder: 'you@havenhospital.local', home: '/doctor' },
+  admin: { label: 'Administrator', placeholder: 'you@havenhospital.local', home: '/admin' },
 }
 
 const loginInput =
@@ -59,7 +59,7 @@ export default function StaffLogin() {
   const panelRef = useRef(null)
   // When redirected here from a protected page, preselect its role and return there after login.
   const [role, setRole] = useState(location.state?.role === 'admin' ? 'admin' : 'doctor')
-  const [form, setForm] = useState({ id: '', password: '', remember: false })
+  const [form, setForm] = useState({ email: '', password: '', remember: false })
   const [errors, setErrors] = useState({})
   const [formError, setFormError] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -88,17 +88,17 @@ export default function StaffLogin() {
   const onSubmit = async (e) => {
     e.preventDefault()
     const errs = {}
-    if (!form.id.trim()) errs.id = 'Enter your staff ID or email.'
+    if (!/^\S+@\S+\.\S+$/.test(form.email.trim())) errs.email = 'Enter your hospital email address.'
     if (!form.password) errs.password = 'Enter your password.'
     setErrors(errs)
     if (Object.keys(errs).length) {
       setShaking(true)
-      document.getElementById(errs.id ? 'staff-id' : 'password')?.focus()
+      document.getElementById(errs.email ? 'email' : 'password')?.focus()
       return
     }
     setLoading(true)
     try {
-      await login({ role, id: form.id.trim(), password: form.password, remember: form.remember })
+      await login({ role, email: form.email.trim(), password: form.password, remember: form.remember })
       const from = location.state?.from
       navigate(from && from.startsWith(roles[role].home) ? from : roles[role].home, { replace: true })
     } catch (err) {
@@ -187,7 +187,7 @@ export default function StaffLogin() {
             onClick={() => setRole('doctor')}
             icon={StethoscopeIcon}
             title="Doctors"
-            text="Create appointments, see today's patients and update visit notes."
+            text="Create appointments, see today's patients and record consultation notes."
             delay={0.7}
           />
           <RoleCard
@@ -195,7 +195,7 @@ export default function StaffLogin() {
             onClick={() => setRole('admin')}
             icon={ShieldIcon}
             title="Administrators"
-            text="Manage staff accounts, departments, patients and reports."
+            text="Manage doctors, staff accounts, patients and hospital settings."
             delay={0.78}
           />
         </div>
@@ -211,7 +211,7 @@ export default function StaffLogin() {
         >
           <motion.h2 {...fadeUp(0.15)} className="text-[2rem] font-extrabold">Staff login</motion.h2>
           <motion.p {...fadeUp(0.22)} className="mt-2.5 text-ink-soft">
-            Choose your role, then sign in with your staff details.
+            Choose your role, then sign in with your hospital email and password.
           </motion.p>
 
           {/* Role toggle: the blue pill slides between options */}
@@ -249,19 +249,20 @@ export default function StaffLogin() {
           </motion.div>
 
           <motion.div {...fadeUp(0.38)} className="mt-6 grid gap-2">
-            <label htmlFor="staff-id" className="text-[0.95rem] font-bold">Staff ID or email</label>
+            <label htmlFor="email" className="text-[0.95rem] font-bold">Hospital email</label>
             <input
-              id="staff-id"
-              name="username"
+              id="email"
+              name="email"
+              type="email"
               autoComplete="username"
-              placeholder={roles[role].idPlaceholder}
-              value={form.id}
-              onChange={update('id')}
-              aria-invalid={!!errors.id}
-              aria-describedby={errors.id ? 'staff-id-error' : undefined}
+              placeholder={roles[role].placeholder}
+              value={form.email}
+              onChange={update('email')}
+              aria-invalid={!!errors.email}
+              aria-describedby={errors.email ? 'email-error' : undefined}
               className={loginInput}
             />
-            <FieldError id="staff-id-error">{errors.id}</FieldError>
+            <FieldError id="email-error">{errors.email}</FieldError>
           </motion.div>
 
           <motion.div {...fadeUp(0.44)} className="mt-6 grid gap-2">
@@ -363,25 +364,17 @@ export default function StaffLogin() {
 
           <motion.div {...fadeUp(0.56)} className="mt-6">
             <Button type="submit" withRipple disabled={loading} className="h-13 w-full text-[1.05rem] disabled:cursor-progress">
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.span
-                  key={loading ? 'loading' : role}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.18 }}
-                  className="inline-flex items-center gap-2.5"
-                >
-                  {loading ? (
-                    <>
-                      <Spinner />
-                      Signing in…
-                    </>
-                  ) : (
-                    `Sign in as ${role === 'doctor' ? 'doctor' : 'administrator'}`
-                  )}
-                </motion.span>
-              </AnimatePresence>
+              {/* Plain label: it must always match the selected role, even before animations run. */}
+              <span className="inline-flex items-center gap-2.5" aria-live="polite">
+                {loading ? (
+                  <>
+                    <Spinner />
+                    Signing in…
+                  </>
+                ) : (
+                  `Sign in as ${role === 'doctor' ? 'doctor' : 'administrator'}`
+                )}
+              </span>
             </Button>
           </motion.div>
 

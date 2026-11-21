@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import Header from './components/Header.jsx'
 import Footer from './components/Footer.jsx'
 import RequireRole from './components/RequireRole.jsx'
@@ -14,6 +14,8 @@ const Profile = lazy(() => import('./doctor/Profile.jsx'))
 const AdminLayout = lazy(() => import('./admin/AdminLayout.jsx'))
 const Overview = lazy(() => import('./admin/Overview.jsx'))
 const Doctors = lazy(() => import('./admin/Doctors.jsx'))
+const Patients = lazy(() => import('./admin/Patients.jsx'))
+const Users = lazy(() => import('./admin/Users.jsx'))
 const Settings = lazy(() => import('./admin/Settings.jsx'))
 
 // Pages that use their own full-screen layout (no public header/footer).
@@ -29,9 +31,18 @@ function PageLoader() {
 
 export default function App() {
   const { pathname, hash } = useLocation()
+  const navigate = useNavigate()
   useEffect(() => {
     if (!hash) window.scrollTo(0, 0)
   }, [pathname, hash])
+
+  // api.js clears the session and fires this when the server rejects a token
+  // (expired, revoked or account deactivated), so the UI returns to the login.
+  useEffect(() => {
+    const onUnauthorized = () => navigate('/login', { replace: true })
+    window.addEventListener('haven:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('haven:unauthorized', onUnauthorized)
+  }, [navigate])
 
   if (isFullScreen(pathname)) {
     return (
@@ -60,6 +71,8 @@ export default function App() {
           >
             <Route index element={<Overview />} />
             <Route path="doctors" element={<Doctors />} />
+            <Route path="patients" element={<Patients />} />
+            <Route path="users" element={<Users />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

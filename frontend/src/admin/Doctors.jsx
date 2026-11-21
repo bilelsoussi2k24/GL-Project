@@ -6,7 +6,7 @@ import Modal from '../components/Modal.jsx'
 import Highlight from '../components/Highlight.jsx'
 import { useToast } from '../components/Toast.jsx'
 import { initials } from '../utils/date.js'
-import { PlusIcon, PencilIcon, TrashIcon, SearchIcon, StethoscopeIcon } from '../components/Icons.jsx'
+import { PlusIcon, PencilIcon, TrashIcon, SearchIcon, StethoscopeIcon, RotateIcon } from '../components/Icons.jsx'
 import {
   Avatar, Button, EmptyState, PageHeader, Panel, PillButton, SearchBox, badgeClass, cx, rowMotion, tbl, textLinkClass,
 } from '../components/ui.jsx'
@@ -24,21 +24,45 @@ export default function Doctors() {
     (d) => !q || [d.name, d.specialty, d.email, d.phone, d.staffId].join(' ').toLowerCase().includes(q.toLowerCase()),
   )
 
+  const changeStatus = async (d, status, message) => {
+    try {
+      await updateDoctor(d.id, { status })
+      toast(message)
+    } catch (err) {
+      toast(err.message, { tone: 'error' })
+    }
+  }
+
   const toggleStatus = (d) => {
+    if (d.status === 'inactive') {
+      changeStatus(d, 'active', `${d.name} can sign in again`)
+      return
+    }
     const next = d.status === 'active' ? 'leave' : 'active'
-    updateDoctor(d.id, { status: next })
-    toast(`${d.name} is now ${statusLabel[next].toLowerCase()}`, {
-      action: { label: 'Undo', onClick: () => updateDoctor(d.id, { status: d.status }) },
-    })
+    changeStatus(d, next, `${d.name} is now ${statusLabel[next].toLowerCase()}`)
   }
 
   const closeConfirm = () => setConfirm((c) => ({ ...c, open: false }))
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     const d = confirm.doctor
-    const undo = removeDoctor(d.id)
     closeConfirm()
-    toast(`Deleted ${d.name}`, { action: { label: 'Undo', onClick: undo }, duration: 6000 })
+    try {
+      await removeDoctor(d.id)
+      toast(`${d.name} is deactivated. Their records are kept.`, {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            updateDoctor(d.id, { status: 'active' }).catch((err) =>
+              toast(err.message, { tone: 'error' }),
+            )
+          },
+        },
+        duration: 6000,
+      })
+    } catch (err) {
+      toast(err.message, { tone: 'error' })
+    }
   }
 
   return (
@@ -72,7 +96,9 @@ export default function Doctors() {
                       <Avatar className="group-hover:scale-108 group-hover:bg-[#d4e2f0]">{initials(d.name)}</Avatar>
                       <span className="grid leading-snug">
                         <strong><Highlight text={d.name} query={q} /></strong>
-                        <small className="text-[0.85rem] text-ink-soft"><Highlight text={d.email} query={q} /></small>
+                        <small className="text-[0.85rem] text-ink-soft">
+                          <Highlight text={[d.staffId, d.email].filter(Boolean).join(' · ')} query={q} />
+                        </small>
                       </span>
                     </span>
                   </td>
@@ -84,26 +110,32 @@ export default function Doctors() {
                       type="button"
                       layout
                       onClick={() => toggleStatus(d)}
-                      title={`Click to mark as ${d.status === 'active' ? 'on leave' : 'active'}`}
+                      title={d.status === 'inactive' ? 'Click to reactivate' : `Click to mark as ${d.status === 'active' ? 'on leave' : 'active'}`}
                       whileHover={{ scale: 1.06 }}
                       whileTap={{ scale: 0.9 }}
                       className={badgeClass(d.status, 'transition-colors duration-300 hover:ring-3 hover:ring-current/20')}
                     >
                       <AnimatePresence mode="wait" initial={false}>
                         <motion.span key={d.status} initial={{ y: 8, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -8, opacity: 0 }} transition={{ duration: 0.15 }}>
-                          {statusLabel[d.status]}
+                          {statusLabel[d.status] ?? d.status}
                         </motion.span>
                       </AnimatePresence>
                     </motion.button>
                   </td>
                   <td className={cx(tbl.td, tbl.actions)}>
-                    <span className="inline-flex gap-2">
+                    <span className="inline-flex flex-wrap gap-2">
                       <PillButton onClick={() => openDoctor(d)}>
                         <PencilIcon />Edit
                       </PillButton>
-                      <PillButton danger onClick={() => setConfirm({ open: true, doctor: d })}>
-                        <TrashIcon />Delete
-                      </PillButton>
+                      {d.status === 'inactive' ? (
+                        <PillButton onClick={() => changeStatus(d, 'active', `${d.name} can sign in again`)}>
+                          <RotateIcon />Reactivate
+                        </PillButton>
+                      ) : (
+                        <PillButton danger onClick={() => setConfirm({ open: true, doctor: d })}>
+                          <TrashIcon />Deactivate
+                        </PillButton>
+                      )}
                     </span>
                   </td>
                 </motion.tr>
@@ -133,12 +165,12 @@ export default function Doctors() {
       <Modal
         open={confirm.open}
         onClose={closeConfirm}
-        title="Delete this doctor?"
+        title="Deactivate this doctor?"
         size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={closeConfirm} data-autofocus>Keep</Button>
-            <Button variant="danger" onClick={confirmDelete}>Delete doctor</Button>
+            <Button variant="ghost" onClick={closeConfirm} data-autofocus>Keep active</Button>
+            <Button variant="danger" onClick={confirmDelete}>Deactivate doctor</Button>
           </>
         }
       >
@@ -146,7 +178,8 @@ export default function Doctors() {
           <p className="leading-relaxed text-ink-soft">
             <strong className="text-ink">{confirm.doctor.name}</strong> · {confirm.doctor.specialty}
             <br />
-            Their staff account ({confirm.doctor.staffId}) will be removed. You can undo this right after.
+            They will no longer be able to sign in. Their patients, appointments and consultations are
+            kept, and you can reactivate the account at any time.
           </p>
         )}
       </Modal>
