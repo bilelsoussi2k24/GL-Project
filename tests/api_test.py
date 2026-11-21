@@ -29,7 +29,7 @@ SUFFIX = uuid.uuid4().hex[:6]
 results = []
 
 
-def call(method, path, body=None, token=None, expect=200):
+def call(method, path, body=None, token=None, expect=200, headers=None):
     accepted = expect if isinstance(expect, (tuple, list, set)) else (expect,)
     request = urllib.request.Request(
         BASE + path,
@@ -40,6 +40,8 @@ def call(method, path, body=None, token=None, expect=200):
         request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", "Bearer " + token)
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             status, raw = response.status, response.read().decode() or "null"
@@ -73,6 +75,8 @@ print("health and authentication")
 health = call("GET", "/health")
 check(health.get("status") == "ok", "health endpoint reports ok")
 check(str(health.get("database", "")).startswith("ok"), "database is reachable")
+check(health.get("database") in ("ok", "unavailable"), "health reports a safe database status")
+check("MySQL" not in str(health.get("database", "")), "health does not expose the database version")
 
 call("POST", "/auth/login", {"email": ADMIN_EMAIL, "password": "definitely-wrong-1"}, expect=401)
 call("GET", "/admin/stats", expect=401)
@@ -91,6 +95,7 @@ call(
     token=admin_token,
     expect=400,
 )
+call("POST", "/auth/login", {"email": ADMIN_EMAIL, "password": 12345678}, expect=400)
 doctor = call(
     "POST",
     "/admin/doctors",
@@ -111,7 +116,23 @@ call(
     expect=409,
 )
 found = call("GET", f"/admin/doctors?q=Doctor{SUFFIX}", token=admin_token)
-check(len(found) == 1, "doctor search finds the new doctor")
+check(any(d["id"] == doctor_id for d in found), "doctor search finds the new doctor")
+
+print("password whitespace is preserved exactly")
+space_email = f"space-{SUFFIX}@test.local"
+space_password = "  Space12345  "
+space_doctor = call(
+    "POST",
+    "/admin/doctors",
+    {"firstName": "Space", "lastName": f"Doctor{SUFFIX}", "specialty": "Cardiology",
+     "email": space_email, "password": space_password},
+    token=admin_token,
+    expect=201,
+)
+call("POST", "/auth/login", {"email": space_email, "password": "Space12345"}, expect=401)
+space_session = call("POST", "/auth/login",
+                     {"email": space_email, "password": space_password, "role": "doctor"})
+check("token" in space_session, "a password with spaces must be typed exactly")
 call("PATCH", f"/admin/doctors/{doctor_id}/status", {"status": "leave"}, token=admin_token)
 on_leave = call("GET", "/admin/doctors?status=leave", token=admin_token)
 check(any(d["id"] == doctor_id for d in on_leave), "status filter returns the doctor on leave")
@@ -127,6 +148,14 @@ check(doctor_session["user"]["doctorId"] == doctor_id, "doctor identity comes fr
 call("GET", "/admin/stats", token=doctor_token, expect=403)
 call("GET", "/admin/users", token=doctor_token, expect=403)
 
+print("forwarded headers cannot bypass throttling")
+spoofed_email = f"nobody-{SUFFIX}@test.local"
+for attempt in range(8):
+    call("POST", "/auth/login", {"email": spoofed_email, "password": "Wrong12345"},
+         headers={"X-Forwarded-For": f"203.0.113.{attempt + 1}"}, expect=401)
+call("POST", "/auth/login", {"email": spoofed_email, "password": "Wrong12345"},
+     headers={"X-Forwarded-For": "198.51.100.99"}, expect=429)
+
 print("patients")
 patient = call(
     "POST",
@@ -137,6 +166,42 @@ patient = call(
     expect=201,
 )
 patient_id = patient["id"]
+
+print("atomic patient creation")
+missing_doctor_last = f"MissingDoctor{SUFFIX}"
+call(
+    "POST",
+    "/admin/patients",
+    {"firstName": "Orphan", "lastName": missing_doctor_last, "birthDate": "1990-01-01",
+     "doctorId": 999999},
+    token=admin_token,
+    expect=404,
+)
+orphans = call("GET", f"/admin/patients?q={missing_doctor_last}", token=admin_token)
+check(orphans == [], "a failed doctor assignment must not leave an orphan patient")
+call(
+    "POST",
+    "/admin/patients",
+    {"firstName": "Future", "lastName": f"Patient{SUFFIX}", "birthDate": "2999-01-01"},
+    token=admin_token,
+    expect=400,
+)
+call(
+    "PUT",
+    f"/admin/patients/{patient_id}",
+    {"firstName": "Test", "lastName": f"Patient{SUFFIX}", "birthDate": "2999-01-01"},
+    token=admin_token,
+    expect=400,
+)
+updated_patient = call(
+    "PUT",
+    f"/admin/patients/{patient_id}",
+    {"firstName": "Test", "lastName": f"Patient{SUFFIX}", "birthDate": "1992-03-04",
+     "gender": "Female", "phone": "22111112", "address": "Sousse"},
+    token=admin_token,
+)
+check(updated_patient["phone"] == "22111112", "patient update is persisted")
+
 visible = call("GET", "/doctors/me/patients", token=doctor_token)
 check(all(p["id"] != patient_id for p in visible), "a patient is invisible before being assigned")
 call("PUT", f"/admin/patients/{patient_id}/doctor", {"doctorId": doctor_id}, token=admin_token)
@@ -184,6 +249,12 @@ appointment = call(
     token=doctor_token,
 )
 check(appointment["appointmentDate"].startswith("2027-01-12T14:00"), "appointment moved")
+cancelled = call("PATCH", f"/doctors/me/appointments/{appointment_id}/status",
+                 {"status": "cancelled"}, token=doctor_token)
+check(cancelled["status"] == "cancelled", "appointment cancellation is persisted")
+call("PUT", f"/doctors/me/appointments/{appointment_id}",
+     {"patientId": patient_id, "appointmentDate": "1800-01-01T09:00:00"},
+     token=doctor_token, expect=400)
 
 print("doctor profile")
 profile = call(
@@ -212,6 +283,12 @@ call("GET", f"/doctors/me/patients/{patient_id}", token=other_token, expect=404)
 call("GET", f"/doctors/me/patients/{patient_id}/consultations", token=other_token, expect=404)
 call("PATCH", f"/doctors/me/appointments/{appointment_id}/status", {"status": "cancelled"},
      token=other_token, expect=404)
+call("POST", "/doctors/me/consultations",
+     {"appointmentId": appointment_id, "diagnosis": "Not my appointment"},
+     token=other_token, expect=404)
+
+print("invalid query strings")
+call("GET", "/admin/patients?q=%zz", token=admin_token, expect=400)
 
 print("hospital settings")
 call("PUT", "/admin/settings", {"name": "Haven Hospital", "visiting": {"start": "20:00", "end": "08:00"}},
@@ -253,6 +330,15 @@ relogin = call("POST", "/auth/login",
 call("POST", "/auth/logout", token=relogin["token"], expect=204)
 call("GET", "/auth/me", token=relogin["token"], expect=401)
 
+print("reset password keeps exact whitespace and revokes sessions")
+reset_password = "  Reset12345  "
+call("POST", f"/admin/users/{space_doctor['userId']}/password", {"password": reset_password},
+     token=admin_token)
+call("POST", "/auth/login", {"email": space_email, "password": reset_password, "role": "doctor"})
+call("POST", "/auth/login", {"email": space_email, "password": "Reset12345", "role": "doctor"},
+     expect=401)
+call("GET", "/doctors/me", token=space_session["token"], expect=401)
+
 print("deactivation")
 call("DELETE", f"/admin/doctors/{doctor_id}", token=admin_token)
 call("POST", "/auth/login",
@@ -260,9 +346,19 @@ call("POST", "/auth/login",
 call("GET", "/doctors/me", token=doctor_token, expect=401)
 reactivated = call("PATCH", f"/admin/doctors/{doctor_id}/status", {"status": "active"}, token=admin_token)
 check(reactivated["status"] == "active", "doctor reactivated")
+call("GET", "/doctors/me", token=doctor_token, expect=401)
 session_again = call("POST", "/auth/login",
                      {"email": f"doctor-{SUFFIX}@test.local", "password": "Doctor12345", "role": "doctor"})
 check("token" in session_again, "reactivated doctor can sign in")
+
+print("profile edit deactivation revokes sessions too")
+call("PUT", f"/admin/doctors/{doctor_id}", {"status": "inactive"}, token=admin_token)
+call("GET", "/doctors/me", token=session_again["token"], expect=401)
+call("PATCH", f"/admin/doctors/{doctor_id}/status", {"status": "active"}, token=admin_token)
+call("GET", "/doctors/me", token=session_again["token"], expect=401)
+final_login = call("POST", "/auth/login",
+                   {"email": f"doctor-{SUFFIX}@test.local", "password": "Doctor12345", "role": "doctor"})
+call("GET", "/doctors/me", token=final_login["token"])
 
 print("account administration")
 call("PATCH", f"/admin/users/{admin['user']['id']}/active", {"active": False}, token=admin_token, expect=400)
