@@ -159,7 +159,6 @@ Status values: **No issue** = reviewed, nothing to fix. **Fixed** = reviewed, de
 | `README.md` | Fixed | Health example, `TRUST_PROXY`, exact-password rules, two-tier throttling, new test commands and verified results. |
 | `backend/README.md` | Fixed | Health payload, throttle rules, `TRUST_PROXY`, `SetPassword` behaviour, new tests. |
 | `frontend/README.md` | Fixed | Corrected the data-provider description and scoped browser-verification claims to the sprint where they ran. |
-| `backend_ai/README.md` | No issue | Matches the service and states that the prompt is not a guarantee. |
 | `docs/architecture.md` | Fixed | Throttle description and active-administrator bootstrap rule. |
 | `docs/api-documentation.md` | Fixed | Safe health response, exact password rule, two-tier limits. |
 | `docs/setup-guide.md` | Fixed | Health output, `TRUST_PROXY`, bootstrap and password rules. |
@@ -277,13 +276,13 @@ The legacy dump remains destructive and is still documented as import-only into 
 | AI empty message | 422 |
 | `tests/api_test.py` | **123/123 passed on three consecutive runs** |
 | Live Gemini answer | Not run (no key) |
-| Browser click-through | Not repeated this sprint |
+| Browser click-through | Pass — public page, admin login + Overview/Doctors/Patients/Accounts/Settings, doctor login + Today/Appointments/Profile, appointment dialog, assistant offline state, logout; no console or network errors |
 
 ## Remaining issues and recommendations
 
 1. **No live Gemini answer was verified**; the no-key path is verified and the Java proxy returns 503.
-2. **The UI was not clicked through in this sprint.** The frontend was rebuilt and linted, and every API
-   contract was exercised, but visual/interaction regressions would need a browser pass.
+2. **Cross-browser and responsive visual review was not repeated.** The UI was clicked through in the
+   bundled Chromium at desktop size; other browsers and small-screen layouts were not re-checked.
 3. **The developer's MySQL on port 3306 was not used** (credentials unknown); tests ran on an isolated
    MySQL 8.0.46 at 127.0.0.1:3307.
 4. **No global per-account login lock.** Distributed guessing from many addresses is slowed per address

@@ -182,11 +182,11 @@ npm run build
 Expected: 0 lint errors (`oxlint` currently prints 4 informational `react(set-state-in-effect)` hints
 for fetch-on-mount effects) and a successful build. Both were run for this version.
 
-Browser flows were verified against the real API in the previous sprint: administrator and doctor
-sign-in, dashboards, patient and account lists, settings loaded from MySQL, the public page, the
-assistant's offline state, booking, "mark as seen", consultation notes persisting after reload, logout
-and the 401 redirect. Sprint 10 rebuilt and linted the frontend and exercised every API contract
-through `tests/api_test.py`; it did not repeat the click-through.
+Browser flows were verified against the real API in Sprint 10: administrator and doctor sign-in,
+Overview, Doctors, Patients, Accounts and Settings, the doctor Today, Appointments and Profile
+screens, the public page, the assistant's offline state, the appointment dialog, logout and the 401
+redirect. The frontend was also rebuilt, linted and exercised through `tests/api_test.py`. A
+cross-browser and small-screen visual review was not repeated.
 
 ## Troubleshooting
 
