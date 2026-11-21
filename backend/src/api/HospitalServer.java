@@ -19,6 +19,7 @@ import model.Patient;
 import model.User;
 import security.AuthService;
 import security.PasswordHasher;
+import security.RateLimiter;
 import security.Session;
 
 import java.io.IOException;
@@ -32,7 +33,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -53,12 +53,15 @@ public final class HospitalServer {
     private static final ConsultationDAO CONSULTATIONS = new ConsultationDAO();
     private static final SettingsDAO SETTINGS = new SettingsDAO();
 
-    private static final Map<String, List<Long>> ASSISTANT_CALLS = new ConcurrentHashMap<>();
-    private static final int ASSISTANT_LIMIT_PER_MINUTE = 15;
+    /** 15 questions per minute per client address; bounded so the map cannot grow forever. */
+    private static final RateLimiter ASSISTANT_CALLS = new RateLimiter(15, 60_000L, 10_000);
 
     private static final String ANY = "AUTH";
     private static final String ADMIN = "ADMIN";
     private static final String DOCTOR = "DOCTOR";
+
+    /** Routes are immutable, so they are built once instead of on every request. */
+    private static final List<Route> ROUTES = routes();
 
     private HospitalServer() {
     }
@@ -89,7 +92,7 @@ public final class HospitalServer {
             String method = ex.getRequestMethod();
 
             Route matchedPath = null;
-            for (Route route : routes()) {
+            for (Route route : ROUTES) {
                 Matcher matcher = route.pattern().matcher(path);
                 if (!matcher.matches()) continue;
                 matchedPath = route;
@@ -206,6 +209,7 @@ public final class HospitalServer {
 
     /* ------------------------------------------------------------------- public */
 
+    /** Public status only: no SQL errors, host names, versions or connection details. */
     private static Object health() {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", "ok");
@@ -215,8 +219,7 @@ public final class HospitalServer {
     }
 
     private static Object assistantChat(HttpExchange ex, Matcher path, Session session) throws Exception {
-        String client = Http.clientKey(ex);
-        if (!allowAssistantCall(client)) {
+        if (!ASSISTANT_CALLS.tryAcquire(Http.clientKey(ex))) {
             throw new ApiException(429, "Too many questions. Wait a minute and ask again.");
         }
         JsonObject body = Http.body(ex);
@@ -224,23 +227,12 @@ public final class HospitalServer {
         return AssistantClient.ask(message);
     }
 
-    private static boolean allowAssistantCall(String client) {
-        long now = System.currentTimeMillis();
-        List<Long> calls = ASSISTANT_CALLS.computeIfAbsent(client, k -> new ArrayList<>());
-        synchronized (calls) {
-            calls.removeIf(time -> now - time > 60_000L);
-            if (calls.size() >= ASSISTANT_LIMIT_PER_MINUTE) return false;
-            calls.add(now);
-            return true;
-        }
-    }
-
     /* --------------------------------------------------------------------- auth */
 
     private static Object login(HttpExchange ex, Matcher path, Session session) throws Exception {
         JsonObject body = Http.body(ex);
         String email = Http.email(body, "email", "Email", true);
-        String password = Http.requiredString(body, "password", "Password", 200);
+        String password = Http.password(body, "password", "Password");
         String role = Http.optionalString(body, "role", "Role", 20);
         if (role != null) role = role.toUpperCase(Locale.ROOT);
 
@@ -277,22 +269,22 @@ public final class HospitalServer {
 
         String newName = fullName == null ? user.getFullName() : fullName;
         if (newName.isBlank()) throw ApiException.badRequest("Full name is required.");
-        if (email != null && !email.equalsIgnoreCase(user.getEmail())) {
-            if (USERS.emailExists(email, (long) user.getId())) throw ApiException.conflict("That email is already in use.");
-            USERS.updateEmail(user.getId(), email);
+        String newEmail = email == null ? user.getEmail() : email;
+        if (!newEmail.equalsIgnoreCase(user.getEmail()) && USERS.emailExists(newEmail, (long) user.getId())) {
+            throw ApiException.conflict("That email is already in use.");
         }
-        USERS.updateProfile(user.getId(), newName, user.getPhone());
+        USERS.updateProfileAndEmail(user.getId(), newName, user.getPhone(), newEmail);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("fullName", newName);
-        response.put("email", email == null ? user.getEmail() : email);
+        response.put("email", newEmail);
         return response;
     }
 
     private static Object changePassword(HttpExchange ex, Matcher path, Session session) throws Exception {
         JsonObject body = Http.body(ex);
-        String current = Http.requiredString(body, "currentPassword", "Current password", 200);
-        String next = Http.requiredString(body, "newPassword", "New password", 200);
+        String current = Http.password(body, "currentPassword", "Current password");
+        String next = Http.password(body, "newPassword", "New password");
         LocalDateTime changedAt = AuthService.changePassword(session, current, next);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("passwordChangedAt", System.currentTimeMillis());
@@ -355,13 +347,14 @@ public final class HospitalServer {
         Integer visitLength = Http.optionalInt(body, "visitLength", "Visit length", 5, 180);
         int length = visitLength == null ? doctor.getVisitLength() : visitLength;
 
-        DOCTORS.updateOwnProfile(session.userId(), firstName, lastName, phone, office, workDays,
-            formatTime(first), formatTime(last), length);
-        USERS.updateProfile(session.userId(), firstName + " " + lastName, phone);
-        if (email != null && !email.equalsIgnoreCase(doctor.getEmail())) {
-            if (USERS.emailExists(email, session.userId())) throw ApiException.conflict("That email is already in use.");
-            USERS.updateEmail(session.userId(), email);
+        String newEmail = email == null ? doctor.getEmail() : email;
+        if (newEmail != null && !newEmail.equalsIgnoreCase(doctor.getEmail())
+            && USERS.emailExists(newEmail, session.userId())) {
+            throw ApiException.conflict("That email is already in use.");
         }
+        DOCTORS.updateOwnProfileWithAccount(session.userId(), firstName, lastName, phone, office, workDays,
+            formatTime(first), formatTime(last), length, firstName + " " + lastName,
+            newEmail == null ? "" : newEmail);
 
         Doctor updated = requireDoctor(session);
         return doctorJson(updated, DOCTORS.countPatients(updated.getId()));
@@ -442,6 +435,10 @@ public final class HospitalServer {
         LocalDateTime date = Http.dateTime(body, "appointmentDate", "Appointment date");
         String reason = Http.optionalString(body, "reason", "Reason", 255);
 
+        if (date.getYear() < 2000 || date.getYear() > 2100) {
+            throw ApiException.badRequest("Choose a realistic appointment date.");
+        }
+
         boolean updated = APPOINTMENTS.update(doctor.getId(), id, patientId, date, reason);
         if (!updated) throw ApiException.badRequest("That patient is not assigned to you.");
         return appointmentJson(APPOINTMENTS.find(doctor.getId(), id));
@@ -478,6 +475,9 @@ public final class HospitalServer {
         String treatment = Http.optionalString(body, "treatment", "Treatment", 2000);
         String notes = Http.optionalString(body, "notes", "Notes", 4000);
 
+        if (APPOINTMENTS.find(doctor.getId(), appointmentId) == null) {
+            throw ApiException.notFound("Appointment not found.");
+        }
         if (CONSULTATIONS.existsForAppointment(appointmentId)) {
             throw ApiException.conflict("This appointment already has a consultation. Edit it instead.");
         }
@@ -595,7 +595,7 @@ public final class HospitalServer {
         String lastName = Http.requiredString(body, "lastName", "Last name", 50);
         String specialty = Http.requiredString(body, "specialty", "Specialty", 100);
         String email = Http.email(body, "email", "Email", true);
-        String password = Http.requiredString(body, "password", "Password", 200);
+        String password = Http.password(body, "password", "Password");
         String phone = Http.optionalString(body, "phone", "Phone", 20);
         String office = Http.optionalString(body, "office", "Office", 80);
         String status = Http.oneOf(
@@ -610,10 +610,6 @@ public final class HospitalServer {
 
         long id = DOCTORS.createWithAccount(email, PasswordHasher.hash(password), firstName + " " + lastName,
             phone, firstName, lastName, specialty, office, status);
-        if ("inactive".equals(status)) {
-            Doctor created = DOCTORS.findById(id);
-            USERS.setActive(created.getUserId(), false);
-        }
         return new Http.Response(201, doctorJson(DOCTORS.findById(id), 0));
     }
 
@@ -632,17 +628,14 @@ public final class HospitalServer {
             ? Http.oneOf(body.get("status").getAsString(), "Status", List.of("active", "leave", "inactive"))
             : doctor.getStatus();
         String email = Http.email(body, "email", "Email", false);
-
-        DOCTORS.update(id, firstName, lastName, specialty, phone, office, status);
-        USERS.updateProfile(doctor.getUserId(), firstName + " " + lastName, phone);
-        if (email != null && !email.equalsIgnoreCase(doctor.getEmail())) {
-            if (USERS.emailExists(email, (long) doctor.getUserId())) {
-                throw ApiException.conflict("Another account already uses that email.");
-            }
-            USERS.updateEmail(doctor.getUserId(), email);
+        String newEmail = email == null ? doctor.getEmail() : email;
+        if (newEmail != null && !newEmail.equalsIgnoreCase(doctor.getEmail())
+            && USERS.emailExists(newEmail, (long) doctor.getUserId())) {
+            throw ApiException.conflict("Another account already uses that email.");
         }
-        USERS.setActive(doctor.getUserId(), !"inactive".equals(status));
 
+        DOCTORS.updateAccount(id, doctor.getUserId(), firstName, lastName, specialty, phone, office, status,
+            newEmail == null ? "" : newEmail);
         return doctorJson(DOCTORS.findById(id), DOCTORS.countPatients(id));
     }
 
@@ -651,9 +644,7 @@ public final class HospitalServer {
         Doctor doctor = DOCTORS.findById(id);
         if (doctor == null) throw ApiException.notFound("Doctor not found.");
 
-        DOCTORS.updateStatus(id, "inactive");
-        USERS.setActive(doctor.getUserId(), false);
-        new dao.SessionDAO().deleteForUser(doctor.getUserId(), null);
+        DOCTORS.updateStatusAccount(id, doctor.getUserId(), "inactive");
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("deactivated", true);
@@ -670,8 +661,7 @@ public final class HospitalServer {
         String status = Http.oneOf(Http.requiredString(body, "status", "Status", 20), "Status",
             List.of("active", "leave", "inactive"));
 
-        DOCTORS.updateStatus(id, status);
-        USERS.setActive(doctor.getUserId(), !"inactive".equals(status));
+        DOCTORS.updateStatusAccount(id, doctor.getUserId(), status);
         return doctorJson(DOCTORS.findById(id), DOCTORS.countPatients(id));
     }
 
@@ -684,7 +674,7 @@ public final class HospitalServer {
     private static Object createUser(HttpExchange ex, Matcher path, Session session) throws Exception {
         JsonObject body = Http.body(ex);
         String email = Http.email(body, "email", "Email", true);
-        String password = Http.requiredString(body, "password", "Password", 200);
+        String password = Http.password(body, "password", "Password");
         String role = Http.oneOf(Http.requiredString(body, "role", "Role", 20).toUpperCase(Locale.ROOT),
             "Role", List.of("ADMIN", "DOCTOR"));
         String fullName = Http.requiredString(body, "fullName", "Full name", 120);
@@ -730,17 +720,10 @@ public final class HospitalServer {
         if (user.getId() == session.userId() && !active) {
             throw ApiException.badRequest("You cannot deactivate your own account.");
         }
-        if (!active && "ADMIN".equals(user.getRole()) && USERS.countActiveAdmins() <= 1) {
-            throw ApiException.badRequest("At least one active administrator is required.");
-        }
 
-        USERS.setActive(userId, active);
-        if (!active) new dao.SessionDAO().deleteForUser(userId, null);
-        if ("DOCTOR".equals(user.getRole())) {
-            Doctor doctor = DOCTORS.findByUserId(userId);
-            if (doctor != null && "inactive".equals(doctor.getStatus()) && active) {
-                DOCTORS.updateStatus(doctor.getId(), "active");
-            }
+        // Also updates a linked doctor profile, revokes sessions and protects the last admin.
+        if (!USERS.setActiveAndSync(userId, active)) {
+            throw ApiException.badRequest("At least one active administrator is required.");
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -752,15 +735,14 @@ public final class HospitalServer {
     private static Object resetPassword(HttpExchange ex, Matcher path, Session session) throws Exception {
         JsonObject body = Http.body(ex);
         long userId = Long.parseLong(Http.pathParam(path, 1));
-        String password = Http.requiredString(body, "password", "New password", 200);
+        String password = Http.password(body, "password", "New password");
         if (!PasswordHasher.isStrongEnough(password)) {
             throw ApiException.badRequest("Use a password of at least 8 characters with a letter and a number.");
         }
         User user = USERS.findById(userId);
         if (user == null) throw ApiException.notFound("Account not found.");
 
-        USERS.updatePassword(userId, PasswordHasher.hash(password));
-        new dao.SessionDAO().deleteForUser(userId, null);
+        USERS.resetPasswordAndRevokeSessions(userId, PasswordHasher.hash(password));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", userId);
@@ -783,12 +765,17 @@ public final class HospitalServer {
 
         if (birthDate.isAfter(LocalDate.now())) throw ApiException.badRequest("Birth date cannot be in the future.");
 
-        long id = PATIENTS.create(firstName, lastName, birthDate, gender, phone, address);
         Long doctorId = body.has("doctorId") ? Http.requiredId(body, "doctorId", "Doctor") : null;
         if (doctorId != null) {
-            if (DOCTORS.findById(doctorId) == null) throw ApiException.notFound("Doctor not found.");
-            PATIENTS.assignDoctor(id, doctorId);
+            Doctor doctor = DOCTORS.findById(doctorId);
+            if (doctor == null) throw ApiException.notFound("Doctor not found.");
+            if ("inactive".equals(doctor.getStatus())) {
+                throw ApiException.badRequest("Assign patients to an active doctor.");
+            }
         }
+
+        long id = PATIENTS.createWithDoctor(firstName, lastName, birthDate, gender, phone, address, doctorId);
+        if (id < 0) throw ApiException.badRequest("Assign patients to an active doctor.");
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", id);
         response.put("hhId", String.format("HH-%06d", id));
@@ -808,6 +795,9 @@ public final class HospitalServer {
         String gender = body.has("gender") ? Http.optionalString(body, "gender", "Gender", 20) : patient.getGender();
         String phone = body.has("phone") ? Http.optionalString(body, "phone", "Phone", 20) : patient.getPhone();
         String address = body.has("address") ? Http.optionalString(body, "address", "Address", 255) : patient.getAddress();
+
+        if (birthDate == null) throw ApiException.badRequest("Birth date is required.");
+        if (birthDate.isAfter(LocalDate.now())) throw ApiException.badRequest("Birth date cannot be in the future.");
 
         PATIENTS.update(id, firstName, lastName, birthDate, gender, phone, address);
         return patientJson(PATIENTS.findById(id));

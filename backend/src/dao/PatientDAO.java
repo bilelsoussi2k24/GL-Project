@@ -147,6 +147,68 @@ public class PatientDAO {
         throw new SQLException("Could not read the new patient id");
     }
 
+    /**
+     * Creates the patient and, when a doctor is supplied, the assignment in one
+     * transaction. Validation happens before the transaction, so a failed assignment
+     * never leaves an unassigned patient behind.
+     *
+     * @return -1 when the doctor does not exist or is deactivated; nothing is stored.
+     */
+    public long createWithDoctor(String firstName, String lastName, LocalDate birthDate, String gender,
+                                 String phone, String address, Long doctorId) throws SQLException {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                if (doctorId != null) {
+                    try (PreparedStatement check = con.prepareStatement(
+                            "SELECT status FROM doctors WHERE id = ? FOR UPDATE")) {
+                        check.setLong(1, doctorId);
+                        try (ResultSet rs = check.executeQuery()) {
+                            if (!rs.next() || "inactive".equals(rs.getString("status"))) {
+                                con.rollback();
+                                return -1;
+                            }
+                        }
+                    }
+                }
+
+                long patientId;
+                try (PreparedStatement st = con.prepareStatement("""
+                        INSERT INTO patients (first_name, last_name, birth_date, gender, phone, address)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, Statement.RETURN_GENERATED_KEYS)) {
+                    st.setString(1, firstName);
+                    st.setString(2, lastName);
+                    st.setDate(3, Date.valueOf(birthDate));
+                    st.setString(4, gender);
+                    st.setString(5, phone);
+                    st.setString(6, address);
+                    st.executeUpdate();
+                    try (ResultSet keys = st.getGeneratedKeys()) {
+                        if (!keys.next()) throw new SQLException("Could not read the new patient id");
+                        patientId = keys.getLong(1);
+                    }
+                }
+
+                if (doctorId != null) {
+                    try (PreparedStatement st = con.prepareStatement(
+                            "INSERT INTO doctor_patients (doctor_id, patient_id) VALUES (?, ?)")) {
+                        st.setLong(1, doctorId);
+                        st.setLong(2, patientId);
+                        st.executeUpdate();
+                    }
+                }
+                con.commit();
+                return patientId;
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
+        }
+    }
+
     public void update(long id, String firstName, String lastName, LocalDate birthDate, String gender,
                        String phone, String address) throws SQLException {
         String sql = """

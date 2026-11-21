@@ -72,15 +72,6 @@ public class UserDAO {
         }
     }
 
-    public void setActive(long userId, boolean active) throws SQLException {
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement("UPDATE users SET active = ? WHERE id = ?")) {
-            st.setBoolean(1, active);
-            st.setLong(2, userId);
-            st.executeUpdate();
-        }
-    }
-
     /** Renames the default seeded title so greetings read "Administrator", not "Hospital". */
     public int renameDefaultAdminTitle() throws SQLException {
         String sql = "UPDATE users SET full_name = 'Administrator' "
@@ -91,33 +82,130 @@ public class UserDAO {
         }
     }
 
-    public void updatePassword(long userId, String passwordHash) throws SQLException {
-        String sql = "UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?";
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql)) {
-            st.setString(1, passwordHash);
-            st.setLong(2, userId);
-            st.executeUpdate();
+    /**
+     * Changes the password and revokes the account's sessions in one transaction.
+     * {@code keepSessionId} is the caller's own session, which stays signed in.
+     */
+    public void changePasswordAndRevokeSessions(long userId, String passwordHash, Long keepSessionId)
+            throws SQLException {
+        String deleteSql = "DELETE FROM auth_sessions WHERE user_id = ?"
+            + (keepSessionId == null ? "" : " AND id <> ?");
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                try (PreparedStatement st = con.prepareStatement(
+                        "UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?")) {
+                    st.setString(1, passwordHash);
+                    st.setLong(2, userId);
+                    st.executeUpdate();
+                }
+                try (PreparedStatement st = con.prepareStatement(deleteSql)) {
+                    st.setLong(1, userId);
+                    if (keepSessionId != null) st.setLong(2, keepSessionId);
+                    st.executeUpdate();
+                }
+                con.commit();
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 
-    public void updateProfile(long userId, String fullName, String phone) throws SQLException {
-        String sql = "UPDATE users SET full_name = ?, phone = ? WHERE id = ?";
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql)) {
-            st.setString(1, fullName);
-            st.setString(2, phone);
-            st.setLong(3, userId);
-            st.executeUpdate();
+    /** Administrator password reset: the account is signed out everywhere. */
+    public void resetPasswordAndRevokeSessions(long userId, String passwordHash) throws SQLException {
+        changePasswordAndRevokeSessions(userId, passwordHash, null);
+    }
+
+    /** Profile and login email change together, so one cannot be stored without the other. */
+    public void updateProfileAndEmail(long userId, String fullName, String phone, String email)
+            throws SQLException {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                try (PreparedStatement st = con.prepareStatement(
+                        "UPDATE users SET full_name = ?, phone = ?, email = ? WHERE id = ?")) {
+                    st.setString(1, fullName);
+                    st.setString(2, phone);
+                    st.setString(3, email.toLowerCase(Locale.ROOT));
+                    st.setLong(4, userId);
+                    st.executeUpdate();
+                }
+                con.commit();
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 
-    public void updateEmail(long userId, String email) throws SQLException {
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement("UPDATE users SET email = ? WHERE id = ?")) {
-            st.setString(1, email.toLowerCase(Locale.ROOT));
-            st.setLong(2, userId);
-            st.executeUpdate();
+    /**
+     * Activates or deactivates an account, keeps the doctor profile consistent and
+     * revokes every session on deactivation, all in one transaction.
+     *
+     * @return false when deactivating would leave the hospital without an active
+     *         administrator. Nothing is changed in that case.
+     */
+    public boolean setActiveAndSync(long userId, boolean active) throws SQLException {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                String role;
+                try (PreparedStatement st = con.prepareStatement("SELECT role FROM users WHERE id = ? FOR UPDATE")) {
+                    st.setLong(1, userId);
+                    try (ResultSet rs = st.executeQuery()) {
+                        if (!rs.next()) {
+                            con.rollback();
+                            return false;
+                        }
+                        role = rs.getString("role");
+                    }
+                }
+                if (!active && "ADMIN".equals(role)) {
+                    int activeAdmins = 0;
+                    try (PreparedStatement st = con.prepareStatement(
+                            "SELECT id FROM users WHERE role = 'ADMIN' AND active = 1 FOR UPDATE");
+                         ResultSet rs = st.executeQuery()) {
+                        while (rs.next()) activeAdmins++;
+                    }
+                    if (activeAdmins <= 1) {
+                        con.rollback();
+                        return false;
+                    }
+                }
+
+                try (PreparedStatement st = con.prepareStatement("UPDATE users SET active = ? WHERE id = ?")) {
+                    st.setBoolean(1, active);
+                    st.setLong(2, userId);
+                    st.executeUpdate();
+                }
+                if ("DOCTOR".equals(role)) {
+                    try (PreparedStatement st = con.prepareStatement(
+                            "UPDATE doctors SET status = ? WHERE user_id = ?")) {
+                        st.setString(1, active ? "active" : "inactive");
+                        st.setLong(2, userId);
+                        st.executeUpdate();
+                    }
+                }
+                if (!active) {
+                    try (PreparedStatement st = con.prepareStatement(
+                            "DELETE FROM auth_sessions WHERE user_id = ?")) {
+                        st.setLong(1, userId);
+                        st.executeUpdate();
+                    }
+                }
+                con.commit();
+                return true;
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 
@@ -194,22 +282,61 @@ public class UserDAO {
         return rows;
     }
 
-    /** Administrators whose password is a real hash, i.e. who can actually sign in. */
-    public long countUsableAdmins() throws SQLException {
-        String sql = "SELECT COUNT(*) FROM users WHERE role = 'ADMIN' AND password_hash LIKE 'pbkdf2_sha256$%'";
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql);
+    /**
+     * Administrators who can actually sign in: an active account with a real hash.
+     * An inactive administrator does not satisfy the bootstrap check.
+     */
+    public long countActiveUsableAdmins(Connection con) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM users "
+            + "WHERE role = 'ADMIN' AND active = 1 AND password_hash LIKE 'pbkdf2_sha256$%'";
+        try (PreparedStatement st = con.prepareStatement(sql);
              ResultSet rs = st.executeQuery()) {
             return rs.next() ? rs.getLong(1) : 0;
         }
     }
 
-    public long countActiveAdmins() throws SQLException {
-        String sql = "SELECT COUNT(*) FROM users WHERE role = 'ADMIN' AND active = 1";
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql);
-             ResultSet rs = st.executeQuery()) {
-            return rs.next() ? rs.getLong(1) : 0;
+    /* --------------------------------------------------- bootstrap helpers */
+
+    public User findByEmail(Connection con, String email) throws SQLException {
+        String sql = "SELECT " + COLUMNS + " FROM users WHERE email = ?";
+        try (PreparedStatement st = con.prepareStatement(sql)) {
+            st.setString(1, email.toLowerCase(Locale.ROOT));
+            try (ResultSet rs = st.executeQuery()) {
+                return rs.next() ? map(rs) : null;
+            }
+        }
+    }
+
+    public long create(Connection con, String email, String passwordHash, String role, String fullName)
+            throws SQLException {
+        String sql = "INSERT INTO users (email, password_hash, role, active, full_name) VALUES (?, ?, ?, 1, ?)";
+        try (PreparedStatement st = con.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            st.setString(1, email.toLowerCase(Locale.ROOT));
+            st.setString(2, passwordHash);
+            st.setString(3, role);
+            st.setString(4, fullName == null ? "" : fullName);
+            st.executeUpdate();
+            try (ResultSet keys = st.getGeneratedKeys()) {
+                if (keys.next()) return keys.getLong(1);
+            }
+        }
+        throw new SQLException("Could not read the new account id");
+    }
+
+    public void updatePassword(Connection con, long userId, String passwordHash) throws SQLException {
+        try (PreparedStatement st = con.prepareStatement(
+                "UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?")) {
+            st.setString(1, passwordHash);
+            st.setLong(2, userId);
+            st.executeUpdate();
+        }
+    }
+
+    public void setActive(Connection con, long userId, boolean active) throws SQLException {
+        try (PreparedStatement st = con.prepareStatement("UPDATE users SET active = ? WHERE id = ?")) {
+            st.setBoolean(1, active);
+            st.setLong(2, userId);
+            st.executeUpdate();
         }
     }
 

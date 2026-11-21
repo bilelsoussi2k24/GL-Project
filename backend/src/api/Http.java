@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpExchange;
+import config.AppConfig;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -28,6 +29,8 @@ public final class Http {
 
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     private static final int MAX_BODY_BYTES = 64 * 1024;
+    /** Same upper bound as {@link security.PasswordHasher#isStrongEnough(String)}. */
+    private static final int MAX_PASSWORD_LENGTH = 200;
     private static final String BODY_ATTRIBUTE = "parsedBody";
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$");
 
@@ -88,6 +91,27 @@ public final class Http {
         return value;
     }
 
+    /**
+     * Reads a password exactly as supplied. Unlike {@link #requiredString}, whitespace is
+     * never stripped: a password is a secret the user chose, not a display name. Empty
+     * or whitespace-only values are rejected, and the length is bounded.
+     */
+    public static String password(JsonObject body, String key, String label) {
+        if (!body.has(key) || body.get(key).isJsonNull()) {
+            throw ApiException.badRequest(label + " is required.");
+        }
+        JsonElement element = body.get(key);
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) {
+            throw ApiException.badRequest(label + " must be text.");
+        }
+        String value = element.getAsString();
+        if (value.isBlank()) throw ApiException.badRequest(label + " is required.");
+        if (value.length() > MAX_PASSWORD_LENGTH) {
+            throw ApiException.badRequest(label + " must be at most " + MAX_PASSWORD_LENGTH + " characters.");
+        }
+        return value;
+    }
+
     public static long requiredId(JsonObject body, String key, String label) {
         if (!body.has(key) || body.get(key).isJsonNull()) throw ApiException.badRequest(label + " is required.");
         try {
@@ -111,6 +135,11 @@ public final class Http {
             throw ApiException.badRequest(label + " must be between " + min + " and " + max + ".");
         }
         return value;
+    }
+
+    /** Maximum password length accepted by the API. */
+    public static int maxPasswordLength() {
+        return MAX_PASSWORD_LENGTH;
     }
 
     public static String email(JsonObject body, String key, String label, boolean required) {
@@ -178,11 +207,16 @@ public final class Http {
         Map<String, String> values = new HashMap<>();
         String raw = ex.getRequestURI().getRawQuery();
         if (raw == null || raw.isBlank()) return values;
-        for (String pair : raw.split("&")) {
-            int eq = pair.indexOf('=');
-            String key = eq < 0 ? pair : pair.substring(0, eq);
-            String value = eq < 0 ? "" : pair.substring(eq + 1);
-            values.put(URLDecoder.decode(key, StandardCharsets.UTF_8), URLDecoder.decode(value, StandardCharsets.UTF_8));
+        try {
+            for (String pair : raw.split("&")) {
+                int eq = pair.indexOf('=');
+                String key = eq < 0 ? pair : pair.substring(0, eq);
+                String value = eq < 0 ? "" : pair.substring(eq + 1);
+                values.put(URLDecoder.decode(key, StandardCharsets.UTF_8),
+                    URLDecoder.decode(value, StandardCharsets.UTF_8));
+            }
+        } catch (IllegalArgumentException e) {
+            throw ApiException.badRequest("The query string is not valid.");
         }
         return values;
     }
@@ -199,9 +233,27 @@ public final class Http {
         return header.startsWith(prefix) ? header.substring(prefix.length()).strip() : null;
     }
 
+    /**
+     * Identifies the caller for rate limiting.
+     *
+     * <p>The TCP peer address is used by default. {@code X-Forwarded-For} is only
+     * honoured when {@code TRUST_PROXY=true} says a reverse proxy is in front of the
+     * API; otherwise any client could send a different header on every request and
+     * bypass the limiter. When proxy support is on, the right-most entry is used: it
+     * is the address appended by the closest proxy, while earlier entries are
+     * client-supplied.</p>
+     */
     public static String clientKey(HttpExchange ex) {
-        String forwarded = ex.getRequestHeaders().getFirst("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) return forwarded.split(",")[0].strip();
+        if (AppConfig.trustProxy()) {
+            String forwarded = ex.getRequestHeaders().getFirst("X-Forwarded-For");
+            if (forwarded != null && !forwarded.isBlank()) {
+                String[] hops = forwarded.split(",");
+                for (int i = hops.length - 1; i >= 0; i--) {
+                    String candidate = hops[i].strip();
+                    if (!candidate.isEmpty() && candidate.length() <= 64) return candidate;
+                }
+            }
+        }
         return ex.getRemoteAddress() == null ? "unknown" : ex.getRemoteAddress().getAddress().getHostAddress();
     }
 

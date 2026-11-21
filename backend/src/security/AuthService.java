@@ -8,23 +8,26 @@ import model.User;
 import java.security.SecureRandom;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
-import java.util.ArrayDeque;
 import java.util.Base64;
-import java.util.Deque;
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Authentication, session lifecycle and password rules. */
 public final class AuthService {
 
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final int MAX_FAILURES = 8;
     private static final long WINDOW_MILLIS = 10 * 60 * 1000L;
 
     private static final SessionDAO SESSIONS = new SessionDAO();
     private static final UserDAO USERS = new UserDAO();
-    private static final Map<String, Deque<Long>> FAILURES = new ConcurrentHashMap<>();
+
+    /**
+     * Failed sign-ins for one email from one address. This slows password guessing
+     * without letting an attacker lock a colleague out of their own account: other
+     * addresses are unaffected, and the limit is reset by a successful sign-in.
+     */
+    private static final RateLimiter ACCOUNT_FAILURES = new RateLimiter(8, WINDOW_MILLIS, 20_000);
+    /** Broad per-address cap, so one host cannot spray failures across many accounts. */
+    private static final RateLimiter ADDRESS_FAILURES = new RateLimiter(50, WINDOW_MILLIS, 10_000);
 
     private AuthService() {
     }
@@ -35,9 +38,9 @@ public final class AuthService {
     public static LoginResult login(String email, String password, String expectedRole, String clientKey)
             throws SQLException {
         String normalizedEmail = email.strip().toLowerCase(Locale.ROOT);
-        String throttleKey = normalizedEmail + "|" + clientKey;
+        String accountKey = normalizedEmail + "|" + clientKey;
 
-        if (isThrottled(throttleKey)) {
+        if (ACCOUNT_FAILURES.isLimited(accountKey) || ADDRESS_FAILURES.isLimited(clientKey)) {
             throw new AuthException(429, "Too many failed sign-in attempts. Try again in a few minutes.");
         }
 
@@ -47,7 +50,8 @@ public final class AuthService {
             && PasswordHasher.verify(password, user.getPasswordHash());
 
         if (!valid) {
-            recordFailure(throttleKey);
+            ACCOUNT_FAILURES.record(accountKey);
+            ADDRESS_FAILURES.record(clientKey);
             throw new AuthException(401, "Incorrect email or password.");
         }
         if (!user.isActive()) {
@@ -58,7 +62,7 @@ public final class AuthService {
             throw new AuthException(403, "This account is not a " + expectedRole.toLowerCase(Locale.ROOT) + " account.");
         }
 
-        FAILURES.remove(throttleKey);
+        ACCOUNT_FAILURES.reset(accountKey);
         LocalDateTime expiresAt = LocalDateTime.now().plusHours(AppConfig.sessionHours());
         String token = newToken();
         SESSIONS.create(user.getId(), PasswordHasher.sha256Hex(token), expiresAt);
@@ -98,8 +102,7 @@ public final class AuthService {
         if (currentPassword.equals(newPassword)) {
             throw new AuthException(400, "Choose a password different from your current one.");
         }
-        USERS.updatePassword(user.getId(), PasswordHasher.hash(newPassword));
-        SESSIONS.deleteForUser(user.getId(), session.sessionId());
+        USERS.changePasswordAndRevokeSessions(user.getId(), PasswordHasher.hash(newPassword), session.sessionId());
         return LocalDateTime.now();
     }
 
@@ -111,23 +114,6 @@ public final class AuthService {
         byte[] bytes = new byte[32];
         RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
-
-    private static boolean isThrottled(String key) {
-        Deque<Long> attempts = FAILURES.get(key);
-        if (attempts == null) return false;
-        long cutoff = System.currentTimeMillis() - WINDOW_MILLIS;
-        synchronized (attempts) {
-            while (!attempts.isEmpty() && attempts.peekFirst() < cutoff) attempts.pollFirst();
-            return attempts.size() >= MAX_FAILURES;
-        }
-    }
-
-    private static void recordFailure(String key) {
-        Deque<Long> attempts = FAILURES.computeIfAbsent(key, k -> new ArrayDeque<>());
-        synchronized (attempts) {
-            attempts.addLast(System.currentTimeMillis());
-        }
     }
 
     /** Authentication or authorization failure carrying the HTTP status to return. */

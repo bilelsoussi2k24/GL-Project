@@ -100,24 +100,27 @@ public class DoctorDAO {
 
     /**
      * Creates the login account and the doctor profile in one transaction, so a
-     * failure never leaves a half-created doctor behind.
+     * failure never leaves a half-created doctor behind. A doctor created as
+     * inactive gets an inactive login account from the start.
      */
     public long createWithAccount(String email, String passwordHash, String fullName, String phone,
                                   String firstName, String lastName, String specialty, String office,
                                   String status) throws SQLException {
+        boolean active = !"inactive".equals(status);
         try (Connection con = DatabaseConnection.getConnection()) {
             con.setAutoCommit(false);
             try {
                 long userId;
                 String userSql = """
                     INSERT INTO users (email, password_hash, role, active, full_name, phone)
-                    VALUES (?, ?, 'DOCTOR', 1, ?, ?)
+                    VALUES (?, ?, 'DOCTOR', ?, ?, ?)
                     """;
                 try (PreparedStatement st = con.prepareStatement(userSql, Statement.RETURN_GENERATED_KEYS)) {
                     st.setString(1, email);
                     st.setString(2, passwordHash);
-                    st.setString(3, fullName);
-                    st.setString(4, phone);
+                    st.setBoolean(3, active);
+                    st.setString(4, fullName);
+                    st.setString(5, phone);
                     st.executeUpdate();
                     try (ResultSet keys = st.getGeneratedKeys()) {
                         if (!keys.next()) throw new SQLException("Could not read the new account id");
@@ -160,55 +163,135 @@ public class DoctorDAO {
         }
     }
 
-    public void update(long id, String firstName, String lastName, String specialty, String phone,
-                       String office, String status) throws SQLException {
-        String sql = """
-            UPDATE doctors SET first_name = ?, last_name = ?, specialty = ?, phone = ?, office = ?, status = ?
-            WHERE id = ?
-            """;
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql)) {
-            st.setString(1, firstName);
-            st.setString(2, lastName);
-            st.setString(3, specialty);
-            st.setString(4, phone);
-            st.setString(5, office);
-            st.setString(6, status);
-            st.setLong(7, id);
-            st.executeUpdate();
+    /**
+     * Administrator edit of a doctor: profile, login account and (when the doctor is
+     * deactivated) session revocation in one transaction. A deactivated doctor is
+     * signed out immediately and cannot reuse an old token if reactivated later.
+     */
+    public void updateAccount(long doctorId, long userId, String firstName, String lastName,
+                              String specialty, String phone, String office, String status, String email)
+            throws SQLException {
+        boolean active = !"inactive".equals(status);
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                try (PreparedStatement st = con.prepareStatement("""
+                        UPDATE doctors SET first_name = ?, last_name = ?, specialty = ?, phone = ?,
+                               office = ?, status = ? WHERE id = ?
+                        """)) {
+                    st.setString(1, firstName);
+                    st.setString(2, lastName);
+                    st.setString(3, specialty);
+                    st.setString(4, phone);
+                    st.setString(5, office);
+                    st.setString(6, status);
+                    st.setLong(7, doctorId);
+                    st.executeUpdate();
+                }
+                try (PreparedStatement st = con.prepareStatement("""
+                        UPDATE users SET full_name = ?, phone = ?, email = ?, active = ? WHERE id = ?
+                        """)) {
+                    st.setString(1, firstName + " " + lastName);
+                    st.setString(2, phone);
+                    st.setString(3, email);
+                    st.setBoolean(4, active);
+                    st.setLong(5, userId);
+                    st.executeUpdate();
+                }
+                if (!active) {
+                    try (PreparedStatement st = con.prepareStatement(
+                            "DELETE FROM auth_sessions WHERE user_id = ?")) {
+                        st.setLong(1, userId);
+                        st.executeUpdate();
+                    }
+                }
+                con.commit();
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 
-    public void updateStatus(long id, String status) throws SQLException {
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement("UPDATE doctors SET status = ? WHERE id = ?")) {
-            st.setString(1, status);
-            st.setLong(2, id);
-            st.executeUpdate();
+    /** Status change for a doctor: profile status, login state and sessions together. */
+    public void updateStatusAccount(long doctorId, long userId, String status) throws SQLException {
+        boolean active = !"inactive".equals(status);
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                try (PreparedStatement st = con.prepareStatement(
+                        "UPDATE doctors SET status = ? WHERE id = ?")) {
+                    st.setString(1, status);
+                    st.setLong(2, doctorId);
+                    st.executeUpdate();
+                }
+                try (PreparedStatement st = con.prepareStatement(
+                        "UPDATE users SET active = ? WHERE id = ?")) {
+                    st.setBoolean(1, active);
+                    st.setLong(2, userId);
+                    st.executeUpdate();
+                }
+                if (!active) {
+                    try (PreparedStatement st = con.prepareStatement(
+                            "DELETE FROM auth_sessions WHERE user_id = ?")) {
+                        st.setLong(1, userId);
+                        st.executeUpdate();
+                    }
+                }
+                con.commit();
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 
-    /** Doctor-editable fields only (administrator-controlled fields stay untouched). */
-    public void updateOwnProfile(long userId, String firstName, String lastName, String phone, String office,
-                                 String workDays, String firstAppointment, String lastAppointment,
-                                 int visitLength) throws SQLException {
-        String sql = """
-            UPDATE doctors SET first_name = ?, last_name = ?, phone = ?, office = ?, work_days = ?,
-                   first_appointment = ?, last_appointment = ?, visit_length = ?
-            WHERE user_id = ?
-            """;
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql)) {
-            st.setString(1, firstName);
-            st.setString(2, lastName);
-            st.setString(3, phone);
-            st.setString(4, office);
-            st.setString(5, workDays);
-            st.setString(6, firstAppointment);
-            st.setString(7, lastAppointment);
-            st.setInt(8, visitLength);
-            st.setLong(9, userId);
-            st.executeUpdate();
+    /**
+     * Doctor-editable fields only (administrator-controlled fields stay untouched),
+     * saved together with the account's display name, phone and email.
+     */
+    public void updateOwnProfileWithAccount(long userId, String firstName, String lastName, String phone,
+                                            String office, String workDays, String firstAppointment,
+                                            String lastAppointment, int visitLength, String fullName,
+                                            String email) throws SQLException {
+        try (Connection con = DatabaseConnection.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                try (PreparedStatement st = con.prepareStatement("""
+                        UPDATE doctors SET first_name = ?, last_name = ?, phone = ?, office = ?, work_days = ?,
+                               first_appointment = ?, last_appointment = ?, visit_length = ?
+                        WHERE user_id = ?
+                        """)) {
+                    st.setString(1, firstName);
+                    st.setString(2, lastName);
+                    st.setString(3, phone);
+                    st.setString(4, office);
+                    st.setString(5, workDays);
+                    st.setString(6, firstAppointment);
+                    st.setString(7, lastAppointment);
+                    st.setInt(8, visitLength);
+                    st.setLong(9, userId);
+                    st.executeUpdate();
+                }
+                try (PreparedStatement st = con.prepareStatement(
+                        "UPDATE users SET full_name = ?, phone = ?, email = ? WHERE id = ?")) {
+                    st.setString(1, fullName);
+                    st.setString(2, phone);
+                    st.setString(3, email);
+                    st.setLong(4, userId);
+                    st.executeUpdate();
+                }
+                con.commit();
+            } catch (SQLException | RuntimeException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(true);
+            }
         }
     }
 

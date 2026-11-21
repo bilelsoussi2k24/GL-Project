@@ -67,17 +67,6 @@ public class SessionDAO {
         }
     }
 
-    public void deleteForUser(long userId, Long exceptSessionId) throws SQLException {
-        String sql = "DELETE FROM auth_sessions WHERE user_id = ?"
-            + (exceptSessionId == null ? "" : " AND id <> ?");
-        try (Connection con = DatabaseConnection.getConnection();
-             PreparedStatement st = con.prepareStatement(sql)) {
-            st.setLong(1, userId);
-            if (exceptSessionId != null) st.setLong(2, exceptSessionId);
-            st.executeUpdate();
-        }
-    }
-
     public int deleteExpired() throws SQLException {
         try (Connection con = DatabaseConnection.getConnection();
              PreparedStatement st = con.prepareStatement("DELETE FROM auth_sessions WHERE expires_at < NOW()")) {

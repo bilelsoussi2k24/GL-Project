@@ -1,6 +1,5 @@
 package tool;
 
-import dao.SessionDAO;
 import dao.UserDAO;
 import model.User;
 import security.PasswordHasher;
@@ -30,8 +29,8 @@ public final class SetPassword {
             System.exit(1);
         }
 
-        users.updatePassword(user.getId(), PasswordHasher.hash(args[1]));
-        new SessionDAO().deleteForUser(user.getId(), null);
+        users.resetPasswordAndRevokeSessions(user.getId(), PasswordHasher.hash(args[1]));
         System.out.println("Password updated for " + user.getEmail() + " (" + user.getRole() + ").");
+        System.out.println("All existing sessions for this account were revoked.");
     }
 }

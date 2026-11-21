@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -87,6 +88,14 @@ public final class AppConfig {
         return get("BIND_ADDRESS", "127.0.0.1");
     }
 
+    /**
+     * True only when the API runs behind a reverse proxy that overwrites or appends
+     * X-Forwarded-For. Disabled by default so clients cannot spoof their address.
+     */
+    public static boolean trustProxy() {
+        return getBool("TRUST_PROXY", false);
+    }
+
     /** Comma separated list of browser origins allowed to call the API. */
     public static List<String> corsOrigins() {
         String raw = get("CORS_ORIGINS",
@@ -114,7 +123,7 @@ public final class AppConfig {
     }
 
     public static String initialAdminEmail() {
-        return get("ADMIN_EMAIL", "admin@haven.local").toLowerCase();
+        return get("ADMIN_EMAIL", "admin@haven.local").toLowerCase(Locale.ROOT);
     }
 
     /** Only used when the database has no administrator yet. */
