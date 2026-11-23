@@ -59,7 +59,8 @@ public final class AuthService {
         }
         if (expectedRole != null && !expectedRole.isBlank()
             && !expectedRole.equalsIgnoreCase(user.getRole())) {
-            throw new AuthException(403, "This account is not a " + expectedRole.toLowerCase(Locale.ROOT) + " account.");
+            String expectedLabel = "ADMIN".equalsIgnoreCase(expectedRole) ? "an administrator" : "a doctor";
+            throw new AuthException(403, "This account is not " + expectedLabel + " account.");
         }
 
         ACCOUNT_FAILURES.reset(accountKey);
